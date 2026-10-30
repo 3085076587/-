@@ -46,9 +46,7 @@ class Settings(BaseSettings):
     # 预设区间缓存预热间隔（秒），默认半小时
     DASHBOARD_CACHE_INTERVAL_SECONDS: int = 1800
 
-    # 系统登录（与巨量 OAuth 无关；线上务必改掉默认值）
-    LOGIN_USERNAME: str = "admin"
-    LOGIN_PASSWORD: str = "admin123"
+    # 登录账号在 sys_user 表，密码只存哈希。这里只保留会话签名密钥。
     SESSION_SECRET: str = "change-me-ad-helper-session-secret"
     SESSION_MAX_AGE_SECONDS: int = 60 * 60 * 24 * 7
 

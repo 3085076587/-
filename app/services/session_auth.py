@@ -1,4 +1,4 @@
-"""简易登录会话：HMAC 签名 Cookie（配置账号，不依赖用户表）。"""
+"""简易登录会话：HMAC 签名 Cookie。账号在 sys_user，密码只存哈希。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,12 @@ import time
 from typing import Any
 
 from fastapi import Request, Response
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.models.sys_user import SysUser
+from app.services.password_hash import verify_password
 
 COOKIE_NAME = "ad_helper_session"
 
@@ -59,11 +63,14 @@ def parse_session_token(token: str | None) -> dict[str, Any] | None:
     return {"username": username}
 
 
-def verify_credentials(username: str, password: str) -> bool:
-    settings = get_settings()
-    u_ok = hmac.compare_digest(username.strip(), settings.LOGIN_USERNAME.strip())
-    p_ok = hmac.compare_digest(password, settings.LOGIN_PASSWORD)
-    return u_ok and p_ok
+def verify_credentials(db: Session, username: str, password: str) -> bool:
+    name = username.strip()
+    if not name or not password:
+        return False
+    user = db.scalar(select(SysUser).where(SysUser.username == name))
+    if user is None:
+        return False
+    return verify_password(password, user.password_hash)
 
 
 def read_session(request: Request) -> dict[str, Any] | None:

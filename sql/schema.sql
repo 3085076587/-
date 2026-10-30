@@ -57,3 +57,13 @@ CREATE TABLE IF NOT EXISTS qianchuan_ad_report (
   KEY idx_qianchuan_ad_report_advertiser_id (advertiser_id),
   KEY idx_qianchuan_ad_report_ad_id (ad_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='千川计划按日报表';
+
+CREATE TABLE IF NOT EXISTS sys_user (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  username VARCHAR(64) NOT NULL COMMENT '登录账号',
+  password_hash VARCHAR(255) NOT NULL COMMENT '密码哈希 pbkdf2_sha256',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_sys_user_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统登录账号';
