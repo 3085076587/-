@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>计划与 ROI · 千川方舟 ERP</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <link rel="apple-touch-icon" href="/static/img/logo.png">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar-mount" data-active="plans"></aside>
+  <div class="main">
+    <header class="topbar">
+      <div class="breadcrumb">计划与 ROI</div>
+      <div class="topbar-right">
+        <span class="status-pill bad" id="token-pill"><span class="status-dot"></span>未授权</span>
+      </div>
+    </header>
+    <main class="content">
+      <div class="panel plans-panel">
+        <div class="toolbar toolbar-wrap">
+          <div class="field">
+            <label>子账户</label>
+            <select id="plan-advertiser"></select>
+          </div>
+          <div class="field">
+            <label>时间</label>
+            <select id="plan-range">
+              <option value="today" selected>今天</option>
+              <option value="7">近7天</option>
+              <option value="30">近30天</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>佣金比例 %</label>
+            <input id="plan-commission" type="number" min="0" max="100" step="0.1" placeholder="例如 20">
+          </div>
+          <button class="btn btn-primary" id="btn-load-plans">拉取计划</button>
+        </div>
+        <p class="hint" id="plan-hint">利润 = (消耗 × 整体支付ROI × (1 − 退货率)) × 佣金 − 消耗。GMV 用实际整体支付 ROI，不用 ROI 目标。</p>
+        <div class="table-wrap plans-table-wrap">
+          <table class="plans-table">
+            <colgroup>
+              <col class="col-switch">
+              <col class="col-info">
+              <col class="col-status">
+              <col class="col-budget">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-count">
+              <col class="col-op">
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="col-switch">开关</th>
+                <th class="col-info">计划信息</th>
+                <th class="col-status">状态</th>
+                <th class="col-budget">预算 / ROI目标</th>
+                <th class="col-num">整体消耗</th>
+                <th class="col-num">净成交金额</th>
+                <th class="col-num">整体支付ROI</th>
+                <th class="col-num">利润</th>
+                <th class="col-count">提醒倒计时</th>
+                <th class="col-op">操作</th>
+              </tr>
+            </thead>
+            <tbody id="plan-tbody">
+              <tr><td colspan="10" class="empty">请选择子账户</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="modal-mask hidden" id="roi-modal">
+  <div class="modal modal-lg">
+    <h3>设置净成交 ROI 目标</h3>
+    <input type="hidden" id="roi-ad-id">
+    <input type="hidden" id="roi-ad-name">
+    <div class="field">
+      <label>计划</label>
+      <div class="muted" id="roi-ad-label">-</div>
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>净成交 ROI 目标</label>
+      <input id="roi-value" type="number" min="0.01" step="0.01" placeholder="例如 2.23">
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>提醒时间</label>
+      <select id="roi-remind">
+        <option value="0">不提醒</option>
+        <option value="300">5 分钟</option>
+        <option value="600">10 分钟</option>
+        <option value="900">15 分钟</option>
+        <option value="1800">30 分钟</option>
+        <option value="3600" selected>1 小时</option>
+        <option value="7200">2 小时</option>
+        <option value="10800">3 小时</option>
+        <option value="custom">自定义分钟…</option>
+      </select>
+    </div>
+    <div class="field hidden" id="roi-remind-custom-wrap" style="margin-top:10px;">
+      <label>自定义分钟数</label>
+      <input id="roi-remind-custom" type="number" min="1" step="1" placeholder="例如 45">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="btn-roi-cancel">取消</button>
+      <button class="btn btn-accent" id="btn-roi-save">确认修改</button>
+    </div>
+  </div>
+</div>
+
+<div id="reminder-stack" class="reminder-stack" aria-live="polite"></div>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/partials.js"></script>
+<script src="/static/js/reminders.js"></script>
+<script src="/static/js/plans.js"></script>
+</body>
+</html>
