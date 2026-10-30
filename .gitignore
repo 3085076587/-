@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 .env
-.env.*
 .cursor/
 *.log
 tools/
