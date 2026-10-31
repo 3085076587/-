@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_cache_redis
-from app.services import advertiser_dashboard, token_store
+from app.services import advertiser_dashboard
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -358,23 +358,30 @@ async def fetch_people(
     people: list[str],
     *,
     force: bool = False,
+    scope_all: bool = False,
 ) -> dict[str, Any]:
+    if scope_all:
+        start, end = range_dates(range_key)
+        discovered = advertiser_dashboard.people_from_accounts(
+            await advertiser_dashboard.load_roi2_accounts(start, end)
+        )
+        if discovered:
+            people = discovered
     parts: list[dict[str, Any]] = []
-    gate = asyncio.Semaphore(2)
-    client = await token_store.build_client(db) if people else None
     errors: list[str] = []
 
     async def one(person: str) -> dict[str, Any] | None:
         try:
-            return await fetch_and_cache(
-                db, range_key, person, force=force, client=client, gate=gate
-            )
+            return await fetch_and_cache(db, range_key, person, force=force)
         except Exception as exc:
             logger.exception("拉取 %s 失败：%s", person, exc)
             if force:
                 errors.append(f"{person}：{exc}")
                 return None
-            return await get_cached(range_key, person)
+            cached = await get_cached(range_key, person)
+            if cached is not None:
+                return cached
+            raise
 
     async with _progress_batch(range_key):
         fetched = await asyncio.gather(*(one(person) for person in people))
@@ -397,19 +404,9 @@ async def warmup_all_presets(db: Session) -> None:
         logger.info("仪表盘预热已在进行，跳过本轮")
         return
     async with _warmup_lock:
-        people = advertiser_dashboard.list_people(db)
-        gate = asyncio.Semaphore(2)
-        client = await token_store.build_client(db) if people else None
         for key in PRESET_RANGES:
-            async with _progress_batch(key):
-                results = await asyncio.gather(
-                    *(
-                        fetch_and_cache(db, key, person, force=True, client=client, gate=gate)
-                        for person in people
-                    ),
-                    return_exceptions=True,
-                )
-            for person, result in zip(people, results):
-                if isinstance(result, Exception):
-                    logger.error("仪表盘预热失败 person=%s range=%s: %s", person, key, result)
-            logger.info("仪表盘缓存已预热 range=%s people=%s", key, len(people))
+            try:
+                await fetch_people(db, key, [], force=True, scope_all=True)
+                logger.info("仪表盘缓存已预热 range=%s", key)
+            except Exception as exc:
+                logger.error("仪表盘预热失败 range=%s: %s", key, exc)

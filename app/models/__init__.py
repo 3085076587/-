@@ -4,6 +4,7 @@ from app.models.advertiser import QianchuanAdvertiser
 from app.models.oauth_token import OAuthToken
 from app.models.plan_commission import PlanCommission
 from app.models.sys_user import SysUser
+from app.models.workbench_session import WorkbenchSession
 
 __all__ = [
     "OAuthToken",
@@ -12,4 +13,5 @@ __all__ = [
     "QianchuanAdReport",
     "SysUser",
     "PlanCommission",
+    "WorkbenchSession",
 ]

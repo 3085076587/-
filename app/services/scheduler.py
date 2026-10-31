@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.services import dashboard_cache, token_store
+from app.services import dashboard_cache, token_store, workbench_session
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -40,6 +40,16 @@ async def refresh_token_if_needed() -> None:
         db.close()
 
 
+async def refresh_workbench_if_needed() -> None:
+    db = SessionLocal()
+    try:
+        await workbench_session.keepalive(db)
+    except Exception as exc:
+        logger.exception("工作台登录保活失败：%s", exc)
+    finally:
+        db.close()
+
+
 async def warmup_dashboard_cache() -> None:
     db = SessionLocal()
     try:
@@ -61,8 +71,9 @@ async def token_refresh_loop(stop_event: asyncio.Event) -> None:
     except asyncio.TimeoutError:
         pass
 
-    # 启动后先预热一轮
+    # 启动后先保活工作台登录，再预热一轮
     await refresh_token_if_needed()
+    await refresh_workbench_if_needed()
     await warmup_dashboard_cache()
 
     while not stop_event.is_set():

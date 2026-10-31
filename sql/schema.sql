@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS sys_user (
   UNIQUE KEY uk_sys_user_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统登录账号';
 
+CREATE TABLE IF NOT EXISTS workbench_session (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  ebpid BIGINT NOT NULL COMMENT '升级版工作台组织 ID',
+  cookie TEXT NOT NULL COMMENT '工作台登录 Cookie',
+  csrf_token VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'csrftoken',
+  expires_at DATETIME NOT NULL COMMENT '预计失效时间，保活成功会顺延',
+  last_check_at DATETIME NULL COMMENT '最近一次保活时间',
+  last_error VARCHAR(500) NOT NULL DEFAULT '' COMMENT '最近一次失败原因',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='巨量引擎工作台登录凭证';
+
 CREATE TABLE IF NOT EXISTS plan_commission (
   id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
   advertiser_id BIGINT NOT NULL COMMENT '千川子账户ID',

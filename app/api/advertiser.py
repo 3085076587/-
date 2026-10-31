@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
@@ -48,13 +50,23 @@ async def get_advertiser_dashboard(
     people = _people_for(db, username)
     range_key = (range or "").strip()
     if range_key in dashboard_cache.PRESET_RANGES:
-        data = await dashboard_cache.fetch_people(db, range_key, people, force=refresh)
+        data = await dashboard_cache.fetch_people(
+            db, range_key, people, force=refresh, scope_all=is_admin(username)
+        )
         return ok(_stamp(data, username))
 
+    today = date.today().isoformat()
+    start = start_date or today
+    end = end_date or today
+    if is_admin(username):
+        rows = await advertiser_dashboard_service.load_roi2_accounts(start, end)
+        discovered = advertiser_dashboard_service.people_from_accounts(rows)
+        if discovered:
+            people = discovered
     parts = []
     for person in people:
         part = await advertiser_dashboard_service.build_dashboard(
-            db, start_date=start_date, end_date=end_date, person=person
+            db, start_date=start, end_date=end, person=person
         )
         part["from_cache"] = False
         parts.append(part)
