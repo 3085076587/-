@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     REDIS_CACHE_URL: str = "redis://127.0.0.1:6379/1"
 
     # 子账户消耗并发拉取上限
-    DASHBOARD_CONCURRENCY: int = 8
+    DASHBOARD_CONCURRENCY: int = 2
 
     # 预设区间缓存预热间隔（秒），默认半小时
     DASHBOARD_CACHE_INTERVAL_SECONDS: int = 1800

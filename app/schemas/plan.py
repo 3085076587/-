@@ -17,6 +17,17 @@ class PlanReportSyncOut(BaseModel):
     updated: int
 
 
+class SaveCommissionIn(BaseModel):
+    advertiser_id: int = Field(..., description="千川子账户ID")
+    ad_id: int = Field(..., description="计划ID")
+    commission_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="佣金比例百分数。空或 0 表示不计算利润",
+    )
+
+
 class UpdateRoiIn(BaseModel):
     advertiser_id: int = Field(..., description="千川子账户ID")
     ad_id: int = Field(..., description="计划ID")

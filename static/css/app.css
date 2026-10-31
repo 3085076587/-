@@ -302,6 +302,64 @@ body {
 
 .toolbar .spacer { flex: 1; }
 
+.account-search-row {
+    margin-top: -4px;
+}
+
+.account-search {
+    position: relative;
+    flex: 1;
+    min-width: 220px;
+    max-width: 420px;
+}
+
+.account-search input {
+    width: 100%;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0 12px;
+    outline: none;
+    background: #fff;
+}
+
+.account-search input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.account-search-menu {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 280px;
+    overflow: auto;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+}
+
+.account-search-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: #fff;
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+.account-search-menu button:last-child { border-bottom: 0; }
+
+.account-search-menu button:hover,
+.account-search-menu button.active {
+    background: var(--primary-light);
+}
+
 .field {
     display: flex;
     flex-direction: column;
@@ -401,6 +459,15 @@ tr:last-child td { border-bottom: 0; }
     padding: 28px 12px;
     text-align: center;
     color: var(--text-secondary);
+}
+
+.rate-extra {
+    display: inline-block;
+    margin-left: 4px;
+    color: #b45309;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 .hint {
@@ -658,7 +725,7 @@ th.sortable:hover {
 
 .plans-table {
     width: 100%;
-    min-width: 1180px;
+    min-width: 1380px;
     table-layout: fixed;
     border-collapse: collapse;
 }
@@ -672,15 +739,21 @@ th.sortable:hover {
 
 .plans-table .col-switch { width: 64px; }
 .plans-table .col-info { width: 28%; }
-.plans-table .col-status { width: 88px; }
-.plans-table .col-budget { width: 140px; }
+.plans-table .col-status { width: 96px; }
+.plans-table .col-budget { width: 148px; }
 .plans-table .col-num { width: 112px; }
+.plans-table .col-profit { width: 210px; }
 .plans-table .col-count { width: 110px; }
 .plans-table .col-op { width: 96px; }
 
 .plans-table td.col-info,
-.plans-table th.col-info {
+.plans-table th.col-info,
+.plans-table td.col-status,
+.plans-table th.col-status,
+.plans-table td.col-budget,
+.plans-table th.col-budget {
     white-space: normal;
+    overflow: hidden;
 }
 
 .plans-table td.col-num,
@@ -689,9 +762,68 @@ th.sortable:hover {
     text-align: right;
 }
 
+.plans-table td.col-profit,
+.plans-table th.col-profit {
+    text-align: left;
+}
+
 .num-neg {
     color: var(--danger);
     font-weight: 600;
+}
+
+.profit-with-rate {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    white-space: nowrap;
+}
+
+.profit-with-rate .profit-num {
+    min-width: 72px;
+    text-align: right;
+}
+
+.plans-table .profit-with-rate {
+    width: 100%;
+    justify-content: flex-end;
+}
+
+.plans-table .profit-num {
+    flex: 1 1 auto;
+    min-width: 64px;
+    text-align: right;
+}
+
+.plans-table .rate-input,
+.plans-table .rate-head {
+    width: 72px;
+    flex: 0 0 72px;
+}
+
+.plans-table .rate-head {
+    text-align: center;
+}
+
+.plans-table .rate-input {
+    text-align: left;
+}
+
+.rate-input {
+    width: 76px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0 8px;
+    font-size: 12px;
+    background: #fff;
+}
+
+.rate-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
 }
 
 .modal-lg {

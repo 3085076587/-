@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,8 @@ from app.models.ad_plan import QianchuanAdPlan
 from app.models.ad_report import QianchuanAdReport
 from app.models.advertiser import QianchuanAdvertiser
 from app.services import token_store
+from app.services.account_access import assert_advertiser_access, current_username, is_admin
+from app.services.advertiser_dashboard import _has_parentheses, person_name
 
 router = APIRouter(tags=["Query"])
 
@@ -51,12 +53,19 @@ def oauth_status(db: Session = Depends(get_db)):
 
 
 @router.get("/advertiser/list", summary="查询已同步的千川子账户")
-def list_advertisers(db: Session = Depends(get_db)):
+def list_advertisers(request: Request, db: Session = Depends(get_db)):
+    username = current_username(request)
     rows = db.scalars(
         select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())
     ).all()
-    return ok(
-        [
+    visible = []
+    for r in rows:
+        adv_name = r.advertiser_name or ""
+        if not _has_parentheses(adv_name):
+            continue
+        if not is_admin(username) and person_name(adv_name) != username:
+            continue
+        visible.append(
             {
                 "id": r.id,
                 "agent_id": r.agent_id,
@@ -65,16 +74,17 @@ def list_advertisers(db: Session = Depends(get_db)):
                 "status": r.status,
                 "sync_time": _dt(r.sync_time),
             }
-            for r in rows
-        ]
-    )
+        )
+    return ok(visible)
 
 
 @router.get("/plan/list", summary="查询已同步的计划")
 def list_plans(
+    request: Request,
     advertiser_id: int = Query(..., description="千川子账户 ID"),
     db: Session = Depends(get_db),
 ):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
     rows = db.scalars(
         select(QianchuanAdPlan)
         .where(QianchuanAdPlan.advertiser_id == advertiser_id)
@@ -98,11 +108,13 @@ def list_plans(
 
 @router.get("/plan/report/list", summary="查询已同步的计划报表")
 def list_reports(
+    request: Request,
     advertiser_id: int = Query(..., description="千川子账户 ID"),
     start_date: str | None = Query(None, description="开始日期 yyyy-MM-dd"),
     end_date: str | None = Query(None, description="结束日期 yyyy-MM-dd"),
     db: Session = Depends(get_db),
 ):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
     stmt = select(QianchuanAdReport).where(QianchuanAdReport.advertiser_id == advertiser_id)
     if start_date:
         stmt = stmt.where(QianchuanAdReport.stat_date >= start_date)

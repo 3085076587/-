@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable, Awaitable
 
 import httpx
@@ -16,8 +18,51 @@ from app.core.exceptions import OceanEngineApiError
 
 logger = logging.getLogger("uvicorn.error")
 
-# 常见 token 失效错误码，遇到后触发刷新重试。
-TOKEN_EXPIRED_CODES = {40100, 40101, 40102, 40103, 40105, 40107}
+# token 失效才刷新。40100 / 40110 / 40130 是频控，不能当成 token 过期去立刻重试。
+TOKEN_EXPIRED_CODES = {40102, 40103, 40104, 40105, 40107}
+RATE_LIMIT_CODES = {40100, 40110, 40130}
+_rate_lock = asyncio.Lock()
+_rate_wait_until = 0.0
+_report_lock = asyncio.Lock()
+_report_next = 0.0
+_REPORT_GAP_SECONDS = 0.4
+
+
+async def _pace_report() -> None:
+    """账户报表两次请求至少隔开 0.4 秒，避免并发把巨量打成 50000。"""
+    global _report_next
+    async with _report_lock:
+        now = time.monotonic()
+        wait = max(0.0, _report_next - now)
+        _report_next = max(now, _report_next) + _REPORT_GAP_SECONDS
+    if wait:
+        await asyncio.sleep(wait)
+
+
+def _message_is_token(message: str) -> bool:
+    text = message.lower()
+    return "token" in text or "过期" in message or "无效" in message
+
+
+def _message_is_rate_limit(message: str, ocean_code: int | None) -> bool:
+    if any(word in message for word in ("频率", "频控", "限流")):
+        return True
+    if ocean_code in RATE_LIMIT_CODES and not _message_is_token(message):
+        return True
+    return False
+
+
+async def _wait_if_rate_limited() -> None:
+    async with _rate_lock:
+        delay = _rate_wait_until - time.monotonic()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
+async def _hold_rate_limit(seconds: float) -> None:
+    global _rate_wait_until
+    async with _rate_lock:
+        _rate_wait_until = max(_rate_wait_until, time.monotonic() + seconds)
 
 
 class OceanEngineClient:
@@ -32,6 +77,16 @@ class OceanEngineClient:
         self.settings = settings or get_settings()
         self.token_refresher = token_refresher
         self.base_url = self.settings.OCEANENGINE_API_BASE.rstrip("/")
+        self._http_client: httpx.AsyncClient | None = None
+
+    def _http(self) -> httpx.AsyncClient:
+        """复用连接。每次新建客户端会把刷新时间耗在握手上。"""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            )
+        return self._http_client
 
     def _dump(self, data: object) -> str:
         return json.dumps(data, ensure_ascii=False, default=str)
@@ -45,23 +100,31 @@ class OceanEngineClient:
         json_body: dict[str, Any] | None = None,
         with_token: bool = True,
         retry_on_token_expired: bool = True,
+        rate_limit_attempt: int = 0,
+        server_attempt: int = 0,
+        repeat_lists: bool = False,
     ) -> dict[str, Any]:
+        if with_token:
+            await _wait_if_rate_limited()
         url = f"{self.base_url}{path}"
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if with_token:
             headers["Access-Token"] = self.access_token
 
-        # GET 复杂对象需要 JSON 字符串化，和官方示例保持一致。
-        query: dict[str, Any] | None = None
+        # 多数 GET 的数组要 JSON 字符串。账户报表 fields 必须拆成重复参数，整段 JSON 会 50000。
+        query: list[tuple[str, Any]] | None = None
         if params:
-            query = {}
+            query = []
             for key, value in params.items():
                 if value is None:
                     continue
-                if isinstance(value, (dict, list)):
-                    query[key] = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, list) and repeat_lists:
+                    for item in value:
+                        query.append((key, item))
+                elif isinstance(value, (dict, list)):
+                    query.append((key, json.dumps(value, ensure_ascii=False, separators=(",", ":"))))
                 else:
-                    query[key] = value
+                    query.append((key, value))
 
         logger.info(
             "巨量请求 %s %s\nheaders=%s\nparams=%s\nbody=%s",
@@ -72,14 +135,13 @@ class OceanEngineClient:
             self._dump(json_body or {}),
         )
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=query,
-                json=json_body,
-            )
+        response = await self._http().request(
+            method,
+            url,
+            headers=headers,
+            params=query,
+            json=json_body,
+        )
 
         try:
             body = response.json()
@@ -97,10 +159,49 @@ class OceanEngineClient:
         code = body.get("code")
         if code not in (0, "0"):
             ocean_code = int(code) if str(code).isdigit() else None
+            message = str(body.get("message") or f"巨量接口失败 code={code}")
+            if with_token and ocean_code == 50000 and server_attempt < 2:
+                wait = server_attempt + 1
+                logger.warning("巨量 50000，%s 秒后重试：%s", wait, message)
+                await asyncio.sleep(wait)
+                return await self._request(
+                    method,
+                    path,
+                    params=params,
+                    json_body=json_body,
+                    with_token=with_token,
+                    retry_on_token_expired=retry_on_token_expired,
+                    rate_limit_attempt=rate_limit_attempt,
+                    server_attempt=server_attempt + 1,
+                    repeat_lists=repeat_lists,
+                )
+            if (
+                with_token
+                and rate_limit_attempt < 2
+                and _message_is_rate_limit(message, ocean_code)
+            ):
+                wait = 2 * (rate_limit_attempt + 1)
+                logger.warning("巨量频控 code=%s，%s 秒后重试：%s", ocean_code, wait, message)
+                await _hold_rate_limit(wait)
+                await asyncio.sleep(wait)
+                return await self._request(
+                    method,
+                    path,
+                    params=params,
+                    json_body=json_body,
+                    with_token=with_token,
+                    retry_on_token_expired=retry_on_token_expired,
+                    rate_limit_attempt=rate_limit_attempt + 1,
+                    server_attempt=server_attempt,
+                    repeat_lists=repeat_lists,
+                )
+            token_expired = ocean_code in TOKEN_EXPIRED_CODES or (
+                ocean_code == 40100 and _message_is_token(message)
+            )
             if (
                 retry_on_token_expired
                 and with_token
-                and ocean_code in TOKEN_EXPIRED_CODES
+                and token_expired
                 and self.token_refresher is not None
             ):
                 logger.warning("检测到 token 失效 code=%s，尝试刷新后重试", ocean_code)
@@ -112,9 +213,12 @@ class OceanEngineClient:
                     json_body=json_body,
                     with_token=with_token,
                     retry_on_token_expired=False,
+                    rate_limit_attempt=rate_limit_attempt,
+                    server_attempt=server_attempt,
+                    repeat_lists=repeat_lists,
                 )
             raise OceanEngineApiError(
-                str(body.get("message") or f"巨量接口失败 code={code}"),
+                message,
                 ocean_code=ocean_code,
                 data=body,
             )
@@ -444,6 +548,7 @@ class OceanEngineClient:
         marketing_goal: str | None = None,
     ) -> dict[str, Any]:
         """GET /v1.0/qianchuan/report/uni_promotion/get/ 全域账户维度。"""
+        await _pace_report()
         default_fields = [
             "stat_cost",
             "total_pay_order_count_for_roi2",
@@ -463,6 +568,7 @@ class OceanEngineClient:
             "GET",
             "/v1.0/qianchuan/report/uni_promotion/get/",
             params=params,
+            repeat_lists=True,
         )
         return body.get("data") or {}
 

@@ -6,7 +6,7 @@
   <title>子账户 · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261031f">
 </head>
 <body>
 <div class="layout">
@@ -41,10 +41,6 @@
             <input type="date" id="dash-end">
           </div>
           <span class="muted" id="dash-range-text">-</span>
-          <div class="field">
-            <label>佣金比例 %</label>
-            <input id="dash-commission" type="number" min="0" max="100" step="0.1" value="20">
-          </div>
           <button class="btn btn-primary" id="btn-load-dash">刷新数据</button>
           <button class="btn" id="btn-sync">同步子账户</button>
         </div>
@@ -77,11 +73,17 @@
       <div class="panel">
         <div class="toolbar">
           <div class="panel-title" style="margin:0;">账户列表</div>
-          <button class="btn" type="button" id="btn-reset-filter">重置筛选</button>
           <div class="spacer"></div>
-          <span class="muted" id="avg-plan-profit">利润合计 -</span>
           <span class="muted" id="account-count">共 0 个</span>
         </div>
+        <div class="toolbar account-search-row">
+          <div class="account-search">
+            <input id="account-search" type="search" placeholder="搜索账户名称或 ID" autocomplete="off">
+            <div id="account-search-menu" class="account-search-menu hidden"></div>
+          </div>
+          <button class="btn" type="button" id="btn-reset-filter">重置筛选</button>
+        </div>
+        <p class="hint">1小时内退款率已在接口数值上加 5 个百分点。</p>
         <div class="table-wrap">
           <table id="adv-table">
             <thead>
@@ -93,13 +95,12 @@
                 <th class="sortable" data-sort="pay_amount">用户实际支付金额 <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="settle_amount">净成交金额 <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="settle_roi">净成交ROI <span class="sort-ind"></span></th>
-                <th class="sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="sort-ind"></span></th>
-                <th class="sortable" data-sort="avg_plan_profit">平均计划利润 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="rate-extra">已加5%</span> <span class="sort-ind"></span></th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="advertiser-tbody">
-              <tr><td colspan="10" class="empty">正在加载…</td></tr>
+              <tr><td colspan="9" class="empty">正在加载…</td></tr>
             </tbody>
           </table>
         </div>
@@ -120,6 +121,6 @@
 <script src="/static/js/common.js"></script>
 <script src="/static/js/partials.js"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/advertisers.js?v=20261030e"></script>
+<script src="/static/js/advertisers.js?v=20261031j"></script>
 </body>
 </html>

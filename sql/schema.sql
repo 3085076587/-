@@ -67,3 +67,13 @@ CREATE TABLE IF NOT EXISTS sys_user (
   PRIMARY KEY (id),
   UNIQUE KEY uk_sys_user_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统登录账号';
+
+CREATE TABLE IF NOT EXISTS plan_commission (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  advertiser_id BIGINT NOT NULL COMMENT '千川子账户ID',
+  ad_id BIGINT NOT NULL COMMENT '计划ID',
+  commission_pct DECIMAL(8,2) NOT NULL COMMENT '佣金比例，单位百分数，例如 20 表示 20%',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_plan_commission_adv_ad (advertiser_id, ad_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='计划佣金比例';

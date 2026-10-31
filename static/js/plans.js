@@ -1,7 +1,9 @@
 (() => {
   const { el, toast, api, setBusy, refreshTokenPill, advertiserOptions, queryParam } =
     window.AdHelper;
-  const COMMISSION_KEY = "ad_helper_commission_pct";
+  const COMMISSION_KEY = "ad_helper_plan_commission";
+  const REFUND_EXTRA = 0.05;
+  const commissionTimers = {};
   let plansCache = [];
   let listMeta = null;
 
@@ -29,35 +31,88 @@
     });
   }
 
+  const STATUS_LABELS = {
+    SYSTEM_DISABLE: "系统暂停",
+    OFFLINE_BUDGET: "预算不足",
+    OFFLINE_BALANCE: "余额不足",
+    AUDIT: "审核中",
+    REAUDIT: "审核中",
+    AUDIT_DENY: "审核不通过",
+    TIME_NO_REACH: "未到投放时间",
+    NO_SCHEDULE: "不在投放时段",
+    FROZEN: "已终止",
+    DELETE: "已删除",
+    DELETED: "已删除",
+  };
+
+  function statusText(label) {
+    const raw = label || "-";
+    return STATUS_LABELS[raw] || raw;
+  }
+
   function fmtRoi(v) {
     if (v == null || v === "") return "-";
     return Number(v).toFixed(2);
   }
 
-  function commissionRate() {
-    const pct = Number(el("plan-commission").value);
-    if (!Number.isFinite(pct) || pct < 0) return null;
-    return pct / 100;
+  function loadCommissionMap() {
+    try {
+      const data = JSON.parse(localStorage.getItem(COMMISSION_KEY) || "{}");
+      return data && typeof data === "object" ? data : {};
+    } catch (_) {
+      return {};
+    }
   }
 
-  function planMoney(item) {
-    const cost = Number(item.stat_cost) || 0;
-    const pay = Number(item.pay_amount) || 0;
-    const settle = Number(item.settle_amount) || 0;
-    const roiRaw = item.pay_roi;
-    const roi = roiRaw == null || roiRaw === "" ? null : Number(roiRaw);
-    const gmv = roi != null && Number.isFinite(roi) && roi > 0 && cost > 0 ? cost * roi : pay;
-    const base = gmv > 0 ? gmv : pay;
-    let rate = 0;
-    if (base > 0) rate = Math.min(1, Math.max(0, (base - settle) / base));
-    return { cost, gmv: base, rate };
+  function forgetLocalCommission(id) {
+    const map = loadCommissionMap();
+    if (!(String(id) in map)) return;
+    delete map[String(id)];
+    localStorage.setItem(COMMISSION_KEY, JSON.stringify(map));
+  }
+
+  function commissionPct(item) {
+    const pct = Number(item && item.commission_pct);
+    if (!Number.isFinite(pct) || pct <= 0) return null;
+    return pct;
+  }
+
+  function refundRatio(value) {
+    let n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    if (n > 1 && n <= 100) n /= 100;
+    if (n > 1) return null;
+    return n;
+  }
+
+  function displayRefund(value) {
+    const n = refundRatio(value);
+    if (n == null) return null;
+    return Math.min(1, n + REFUND_EXTRA);
+  }
+
+  function fmtRate(v) {
+    const n = displayRefund(v);
+    if (n == null) return "-";
+    return `${(n * 100).toFixed(2)}%`;
   }
 
   function planProfit(item) {
-    const commission = commissionRate();
-    if (commission == null) return null;
-    const { cost, gmv, rate } = planMoney(item);
-    return gmv * (1 - rate) * commission - cost;
+    const pct = commissionPct(item);
+    const cost = Number(item.stat_cost);
+    const roi = Number(item.pay_roi);
+    const refund = displayRefund(item.refund_rate_1h);
+    if (pct == null || !Number.isFinite(cost) || !Number.isFinite(roi) || refund == null) return null;
+    return cost * roi * (1 - refund) * (pct / 100) - cost;
+  }
+
+  function paintProfitCell(id) {
+    const item = plansCache.find((row) => String(row.ad_id) === String(id));
+    const node = document.querySelector(`[data-profit-for="${id}"]`);
+    if (!item || !node) return;
+    const profit = planProfit(item);
+    node.textContent = profit == null ? "-" : fmtMoney(profit);
+    node.classList.toggle("num-neg", profit != null && profit < 0);
   }
 
   function moneyCell(value) {
@@ -69,19 +124,17 @@
 
   function paintHint() {
     if (!listMeta || !el("plan-hint")) return;
-    const profitSum = plansCache.reduce((sum, item) => {
-      const p = planProfit(item);
-      return p == null ? sum : sum + p;
-    }, 0);
-    const profitText =
-      commissionRate() == null ? "填写佣金比例后计算利润" : `利润合计 ${fmtMoney(profitSum)}`;
-    el("plan-hint").textContent = `已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}`;
+    const profits = plansCache.map(planProfit).filter((n) => n != null);
+    const profitText = profits.length
+      ? `利润合计 ${fmtMoney(profits.reduce((sum, n) => sum + n, 0))}`
+      : "利润合计 -";
+    el("plan-hint").textContent = `1小时内退款率已加 5%。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}`;
   }
 
   function renderPlans(list) {
     const tbody = el("plan-tbody");
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty">暂无计划</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty">暂无计划</td></tr>';
       return;
     }
     tbody.innerHTML = list
@@ -108,7 +161,7 @@
               </div>
             </div>
           </td>
-          <td class="col-status">${item.status_label || "-"}</td>
+          <td class="col-status">${statusText(item.status_label)}</td>
           <td class="col-budget">
             <div>预算 ${item.budget != null ? item.budget : "-"}</div>
             <div>ROI目标 <b>${fmtRoi(item.roi2_goal)}</b></div>
@@ -116,7 +169,13 @@
           ${moneyCell(item.stat_cost)}
           ${moneyCell(item.settle_amount)}
           <td class="col-num">${fmtRoi(item.pay_roi)}</td>
-          ${moneyCell(profit)}
+          <td class="col-num">${fmtRate(item.refund_rate_1h)}</td>
+          <td class="col-profit">
+            <div class="profit-with-rate">
+              <span class="profit-num${profit != null && profit < 0 ? " num-neg" : ""}" data-profit-for="${item.ad_id}">${profit == null ? "-" : fmtMoney(profit)}</span>
+              <input class="rate-input" type="number" min="0" max="100" step="0.1" placeholder="佣金%" data-commission-id="${item.ad_id}" value="${commissionPct(item) == null ? "" : commissionPct(item)}">
+            </div>
+          </td>
           <td class="col-count"><span class="countdown" data-remind-ad="${item.ad_id}">-</span></td>
           <td class="col-op">
             <button class="btn btn-accent"
@@ -154,8 +213,9 @@
       listMeta = { total: data.total || 0, start, end };
       renderPlans(plansCache);
       paintHint();
+      await migrateLocalCommission();
     } catch (err) {
-      el("plan-tbody").innerHTML = `<tr><td colspan="10" class="empty">${err.message || "拉取失败"}</td></tr>`;
+      el("plan-tbody").innerHTML = `<tr><td colspan="11" class="empty">${err.message || "拉取失败"}</td></tr>`;
       el("plan-hint").textContent = err.message || "拉取失败";
       throw err;
     }
@@ -173,14 +233,64 @@
     el("roi-modal").classList.add("hidden");
   }
 
-  const savedCommission = localStorage.getItem(COMMISSION_KEY);
-  if (savedCommission != null) el("plan-commission").value = savedCommission;
-  el("plan-commission").addEventListener("input", () => {
-    localStorage.setItem(COMMISSION_KEY, el("plan-commission").value);
-    if (plansCache.length) {
+  function parsedCommission(raw) {
+    const text = String(raw == null ? "" : raw).trim();
+    if (!text) return null;
+    const pct = Number(text);
+    if (!Number.isFinite(pct) || pct <= 0) return null;
+    return pct;
+  }
+
+  async function persistCommission(item) {
+    const advertiserId = Number(el("plan-advertiser").value);
+    if (!advertiserId || !item) return;
+    try {
+      const data = await api("/api/plan/commission", {
+        method: "POST",
+        body: JSON.stringify({
+          advertiser_id: advertiserId,
+          ad_id: Number(item.ad_id),
+          commission_pct: commissionPct(item),
+        }),
+      });
+      item.commission_pct = data.commission_pct;
+      forgetLocalCommission(item.ad_id);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  async function migrateLocalCommission() {
+    const map = loadCommissionMap();
+    let changed = false;
+    for (const item of plansCache) {
+      if (commissionPct(item) != null) {
+        forgetLocalCommission(item.ad_id);
+        continue;
+      }
+      const pct = parsedCommission(map[String(item.ad_id)]);
+      if (pct == null) continue;
+      item.commission_pct = pct;
+      await persistCommission(item);
+      changed = true;
+    }
+    if (changed) {
       renderPlans(plansCache);
       paintHint();
     }
+  }
+
+  el("plan-tbody").addEventListener("input", (event) => {
+    const input = event.target.closest("[data-commission-id]");
+    if (!input) return;
+    const id = input.getAttribute("data-commission-id");
+    const item = plansCache.find((row) => String(row.ad_id) === String(id));
+    if (!item) return;
+    item.commission_pct = parsedCommission(input.value);
+    paintProfitCell(id);
+    paintHint();
+    clearTimeout(commissionTimers[id]);
+    commissionTimers[id] = setTimeout(() => persistCommission(item), 400);
   });
 
   el("btn-load-plans").addEventListener("click", async (e) => {

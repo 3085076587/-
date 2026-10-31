@@ -13,6 +13,19 @@ from app.core.exceptions import AppError
 from app.models.advertiser import QianchuanAdvertiser
 from app.schemas.advertiser import AdvertiserSyncOut
 from app.services import token_store
+from app.services.advertiser_dashboard import _has_parentheses, person_name
+
+
+def _page_has_more(page_info: dict[str, Any], page: int, page_size: int, batch_len: int) -> bool:
+    if batch_len <= 0:
+        return False
+    total_number = int(page_info.get("total_number") or page_info.get("total_num") or 0)
+    if total_number > 0:
+        return page * page_size < total_number
+    total_page = int(page_info.get("total_page") or 0)
+    if total_page > 0:
+        return page < total_page
+    return batch_len >= page_size
 
 
 def _collect_team_ids(node: dict[str, Any] | list[Any] | None, bag: set[int]) -> None:
@@ -53,8 +66,7 @@ async def _fetch_ebp_accounts(client: OceanEngineClient, root_id: int) -> list[d
                     "status": "ACTIVE",
                 }
             page_info = data.get("page_info") or {}
-            total_page = int(page_info.get("total_page") or page)
-            if page >= total_page or not chunk:
+            if not _page_has_more(page_info, page, 100, len(chunk)):
                 break
             page += 1
     return list(accounts.values())
@@ -76,8 +88,7 @@ async def _fetch_agent_accounts(client: OceanEngineClient, agent_id: int) -> lis
             if adv_id:
                 result.append({"advertiser_id": adv_id, "advertiser_name": name, "status": "ACTIVE"})
         page_info = data.get("page_info") or {}
-        total_page = int(page_info.get("total_page") or page)
-        if page >= total_page or not chunk:
+        if not _page_has_more(page_info, page, 100, len(chunk)):
             break
         page += 1
     return result
@@ -103,14 +114,13 @@ async def _fetch_customer_center_accounts(
                 }
             )
         page_info = data.get("page_info") or {}
-        total_page = int(page_info.get("total_page") or page)
-        if page >= total_page or not chunk:
+        if not _page_has_more(page_info, page, 100, len(chunk)):
             break
         page += 1
     return result
 
 
-async def sync_all_advertisers(db: Session) -> AdvertiserSyncOut:
+async def sync_all_advertisers(db: Session, only_person: str | None = None) -> AdvertiserSyncOut:
     row = await token_store.ensure_access_token(db)
     if not row.agent_id:
         raise AppError("尚未绑定 agent_id，请先调用 /api/oauth/fetch-agent-id", code=40412)
@@ -137,8 +147,15 @@ async def sync_all_advertisers(db: Session) -> AdvertiserSyncOut:
     created = 0
     updated = 0
     now = datetime.now().replace(microsecond=0)
+    kept_ids: set[int] = set()
     for item in accounts:
         adv_id = int(item["advertiser_id"])
+        adv_name = item.get("advertiser_name") or ""
+        if not _has_parentheses(adv_name):
+            continue
+        if only_person is not None and person_name(adv_name) != only_person:
+            continue
+        kept_ids.add(adv_id)
         existing = db.scalar(
             select(QianchuanAdvertiser).where(QianchuanAdvertiser.advertiser_id == adv_id)
         )
@@ -161,10 +178,18 @@ async def sync_all_advertisers(db: Session) -> AdvertiserSyncOut:
             existing.sync_time = now
             updated += 1
 
+    if only_person is None:
+        for existing in db.scalars(select(QianchuanAdvertiser)).all():
+            if int(existing.advertiser_id) in kept_ids:
+                continue
+            if _has_parentheses(existing.advertiser_name or ""):
+                continue
+            db.delete(existing)
+
     db.commit()
     return AdvertiserSyncOut(
         agent_id=agent_id,
-        total=len(accounts),
+        total=len(kept_ids),
         created=created,
         updated=updated,
     )

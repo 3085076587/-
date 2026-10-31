@@ -6,7 +6,7 @@
   <title>计划与 ROI · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261031f">
 </head>
 <body>
 <div class="layout">
@@ -33,13 +33,9 @@
               <option value="30">近30天</option>
             </select>
           </div>
-          <div class="field">
-            <label>佣金比例 %</label>
-            <input id="plan-commission" type="number" min="0" max="100" step="0.1" placeholder="例如 20">
-          </div>
           <button class="btn btn-primary" id="btn-load-plans">拉取计划</button>
         </div>
-        <p class="hint" id="plan-hint">利润 = (消耗 × 整体支付ROI × (1 − 退货率)) × 佣金 − 消耗。GMV 用实际整体支付 ROI，不用 ROI 目标。</p>
+        <p class="hint" id="plan-hint">1小时内退款率已加 5%。利润 = (消耗 × 整体支付ROI × (1 − 退货率)) × 佣金 − 消耗。佣金会保存，下次打开不用再填。</p>
         <div class="table-wrap plans-table-wrap">
           <table class="plans-table">
             <colgroup>
@@ -51,6 +47,7 @@
               <col class="col-num">
               <col class="col-num">
               <col class="col-num">
+              <col class="col-profit">
               <col class="col-count">
               <col class="col-op">
             </colgroup>
@@ -63,13 +60,19 @@
                 <th class="col-num">整体消耗</th>
                 <th class="col-num">净成交金额</th>
                 <th class="col-num">整体支付ROI</th>
-                <th class="col-num">利润</th>
+                <th class="col-num">1小时内退款率 <span class="rate-extra">已加5%</span></th>
+                <th class="col-profit">
+                  <div class="profit-with-rate">
+                    <span class="profit-num">利润</span>
+                    <span class="rate-head">佣金%</span>
+                  </div>
+                </th>
                 <th class="col-count">提醒倒计时</th>
                 <th class="col-op">操作</th>
               </tr>
             </thead>
             <tbody id="plan-tbody">
-              <tr><td colspan="10" class="empty">请选择子账户</td></tr>
+              <tr><td colspan="11" class="empty">请选择子账户</td></tr>
             </tbody>
           </table>
         </div>
@@ -121,6 +124,6 @@
 <script src="/static/js/common.js"></script>
 <script src="/static/js/partials.js"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/plans.js"></script>
+<script src="/static/js/plans.js?v=20261031f"></script>
 </body>
 </html>

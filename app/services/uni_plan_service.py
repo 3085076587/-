@@ -6,10 +6,12 @@ import asyncio
 from datetime import date
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.clients.oceanengine import OceanEngineClient
 from app.core.exceptions import AppError, OceanEngineApiError
+from app.models.plan_commission import PlanCommission
 from app.schemas.plan import UpdateRoiIn, UpdateRoiOut, UpdateStatusIn
 from app.services import reminder_service, token_store
 
@@ -20,6 +22,7 @@ PLAN_FIELDS = [
     "total_order_settle_amount_for_roi2_1h",
     "total_prepay_and_pay_settle_roi2_1h",
     "total_refund_order_gmv_for_roi2_1h_rate",
+    "total_refund_order_gmv_for_roi2_1h_all",
 ]
 
 
@@ -45,12 +48,35 @@ def _norm_rate(value: Any) -> float | None:
     return round(rate, 6)
 
 
+_STATUS_LABELS = {
+    "DELIVERY_OK": "投放中",
+    "ENABLE": "投放中",
+    "DELIVERING": "投放中",
+    "DISABLE": "已暂停",
+    "DISABLED": "已暂停",
+    "PAUSED": "已暂停",
+    "SYSTEM_DISABLE": "系统暂停",
+    "OFFLINE_BUDGET": "预算不足",
+    "OFFLINE_BALANCE": "余额不足",
+    "AUDIT": "审核中",
+    "REAUDIT": "审核中",
+    "AUDIT_DENY": "审核不通过",
+    "TIME_NO_REACH": "未到投放时间",
+    "NO_SCHEDULE": "不在投放时段",
+    "FROZEN": "已终止",
+    "DELETE": "已删除",
+    "DELETED": "已删除",
+}
+
+
 def _status_label(ad_info: dict[str, Any]) -> str:
     status = str(ad_info.get("status") or "")
     opt = str(ad_info.get("opt_status") or "")
-    if opt == "DISABLE" or status in {"DISABLE", "DISABLED", "PAUSED"}:
+    if status in _STATUS_LABELS:
+        return _STATUS_LABELS[status]
+    if opt == "DISABLE":
         return "已暂停"
-    if status in {"DELIVERY_OK", "ENABLE", "DELIVERING"} or opt == "ENABLE":
+    if opt == "ENABLE":
         return "投放中"
     return status or opt or "-"
 
@@ -68,6 +94,13 @@ async def list_uni_plans(
     start_time = f"{start} 00:00:00"
     end_time = f"{end} 23:59:59"
     client = await token_store.build_client(db)
+    saved_commission = {
+        int(row.ad_id): float(row.commission_pct)
+        for row in db.scalars(
+            select(PlanCommission).where(PlanCommission.advertiser_id == advertiser_id)
+        ).all()
+        if float(row.commission_pct) > 0
+    }
 
     plans: list[dict[str, Any]] = []
     page = 1
@@ -109,7 +142,13 @@ async def list_uni_plans(
             settle = _mf_to_yuan(stats.get("total_order_settle_amount_for_roi2_1h"))
             pay = _mf_to_yuan(stats.get("total_pay_order_gmv_for_roi2"))
             pay_roi = _num(stats.get("total_prepay_and_pay_order_roi2")) or None
-            refund_rate = _norm_rate(stats.get("total_refund_order_gmv_for_roi2_1h_rate"))
+            pay_raw = _num(stats.get("total_pay_order_gmv_for_roi2"))
+            refund_gmv = _num(stats.get("total_refund_order_gmv_for_roi2_1h_all"))
+            api_rate = _norm_rate(stats.get("total_refund_order_gmv_for_roi2_1h_rate"))
+            if pay_raw > 0 and refund_gmv > 0:
+                refund_rate = round(min(1.0, refund_gmv / pay_raw), 6)
+            else:
+                refund_rate = api_rate
             plans.append(
                 {
                     "advertiser_id": advertiser_id,
@@ -131,11 +170,20 @@ async def list_uni_plans(
                     "settle_amount": settle,
                     "settle_roi": _num(stats.get("total_prepay_and_pay_settle_roi2_1h")) or None,
                     "refund_rate_1h": refund_rate,
+                    "commission_pct": saved_commission.get(ad_id),
                 }
             )
         page_info = data.get("page_info") or {}
-        total_page = int(page_info.get("total_page") or page)
-        if page >= total_page or not (data.get("ad_list") or []):
+        batch = data.get("ad_list") or []
+        total_number = int(page_info.get("total_number") or page_info.get("total_num") or 0)
+        total_page = int(page_info.get("total_page") or 0)
+        if total_number > 0:
+            has_more = page * 50 < total_number
+        elif total_page > 0:
+            has_more = page < total_page
+        else:
+            has_more = len(batch) >= 50
+        if not batch or not has_more:
             break
         page += 1
 
@@ -146,6 +194,34 @@ async def list_uni_plans(
         "plans": plans,
         "total": len(plans),
     }
+
+
+def save_plan_commission(
+    db: Session,
+    advertiser_id: int,
+    ad_id: int,
+    commission_pct: float | None,
+) -> dict[str, Any]:
+    """佣金为空或 0 时删掉记录，页面上不显示利润。"""
+    row = db.scalar(
+        select(PlanCommission).where(
+            PlanCommission.advertiser_id == advertiser_id,
+            PlanCommission.ad_id == ad_id,
+        )
+    )
+    pct = float(commission_pct or 0)
+    if pct <= 0:
+        if row is not None:
+            db.delete(row)
+            db.commit()
+        return {"advertiser_id": advertiser_id, "ad_id": ad_id, "commission_pct": None}
+    if row is None:
+        row = PlanCommission(advertiser_id=advertiser_id, ad_id=ad_id, commission_pct=pct)
+        db.add(row)
+    else:
+        row.commission_pct = pct
+    db.commit()
+    return {"advertiser_id": advertiser_id, "ad_id": ad_id, "commission_pct": pct}
 
 
 async def update_plan_status(db: Session, payload: UpdateStatusIn) -> dict[str, Any]:

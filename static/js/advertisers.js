@@ -1,10 +1,12 @@
 (() => {
   const { el, toast, api, setBusy, refreshTokenPill } = window.AdHelper;
 
-  const COMMISSION_KEY = "ad_helper_commission_pct";
+  const REFUND_EXTRA = 0.05;
   let rowsCache = [];
   let sortKey = "stat_cost";
   let sortAsc = false;
+  let accountKeyword = "";
+  let pickedId = "";
 
   function fmtMoney(v) {
     if (v == null || v === "") return "-";
@@ -19,52 +21,24 @@
     return Number(v).toFixed(2);
   }
 
-  function fmtRate(v) {
-    if (v == null || v === "") return "-";
-    let n = Number(v);
-    if (!Number.isFinite(n) || n < 0) return "-";
+  function refundRatio(value) {
+    let n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
     if (n > 1 && n <= 100) n /= 100;
-    if (n > 1) return "-";
+    if (n > 1) return null;
+    return n;
+  }
+
+  function displayRefund(value) {
+    const n = refundRatio(value);
+    if (n == null) return null;
+    return Math.min(1, n + REFUND_EXTRA);
+  }
+
+  function fmtRate(v) {
+    const n = displayRefund(v);
+    if (n == null) return "-";
     return `${(n * 100).toFixed(2)}%`;
-  }
-
-  function commissionRate() {
-    const input = el("dash-commission");
-    let raw = input ? String(input.value).trim() : "";
-    if (!raw) {
-      raw = (localStorage.getItem(COMMISSION_KEY) || "").trim();
-    }
-    if (!raw) raw = "20";
-    const pct = Number(raw);
-    if (!Number.isFinite(pct) || pct < 0) return 0.2;
-    if (input && input.value !== raw) input.value = raw;
-    return pct / 100;
-  }
-
-  function accountProfit(item) {
-    const commission = commissionRate();
-    if (commission == null) return null;
-    const cost = Number(item.stat_cost) || 0;
-    const pay = Number(item.pay_amount) || 0;
-    const roiRaw = item.pay_roi;
-    const roi = roiRaw == null || roiRaw === "" ? null : Number(roiRaw);
-    const gmv = roi != null && Number.isFinite(roi) && roi > 0 && cost > 0 ? cost * roi : pay;
-    let refund = Number(item.refund_rate_1h);
-    if (!Number.isFinite(refund) || refund < 0) refund = 0;
-    if (refund > 1 && refund <= 100) refund /= 100;
-    if (refund > 1) refund = 1;
-    return gmv * (1 - refund) * commission - cost;
-  }
-
-  function paintAvgProfit() {
-    const node = el("avg-plan-profit");
-    if (!node) return;
-    if (commissionRate() == null) {
-      node.textContent = "利润合计 -";
-      return;
-    }
-    const total = rowsCache.reduce((sum, item) => sum + (accountProfit(item) || 0), 0);
-    node.textContent = rowsCache.length ? `利润合计 ${fmtMoney(total)}` : "利润合计 -";
   }
 
   function localISODate(d) {
@@ -146,11 +120,32 @@
     el("ov-settle-roi").textContent = fmtRoi(data.settle_roi);
   }
 
+  function fuzzyHit(item, keyword) {
+    const q = String(keyword || "").trim().toLowerCase();
+    if (!q) return true;
+    const hay = `${item.advertiser_name || ""} ${item.advertiser_id || ""}`.toLowerCase();
+    if (hay.includes(q)) return true;
+    let i = 0;
+    for (const ch of hay) {
+      if (ch === q[i]) i += 1;
+      if (i >= q.length) return true;
+    }
+    return false;
+  }
+
+  function matchedAccounts(keyword) {
+    const q = String(keyword || "").trim();
+    if (!q) return rowsCache.slice(0, 12);
+    return rowsCache.filter((item) => fuzzyHit(item, q)).slice(0, 12);
+  }
+
   function sortedRows() {
-    const list = rowsCache.map((item) => ({
-      ...item,
-      avg_plan_profit: accountProfit(item),
-    }));
+    const list = rowsCache
+      .filter((item) => {
+        if (pickedId) return String(item.advertiser_id) === String(pickedId);
+        return fuzzyHit(item, accountKeyword);
+      })
+      .slice();
     if (!sortKey) return list;
     list.sort((a, b) => {
       const av = a[sortKey];
@@ -176,9 +171,11 @@
     const list = sortedRows();
     const tbody = el("advertiser-tbody");
     if (!list.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="10" class="empty">暂无子账户，请先同步</td></tr>';
+      const emptyText = rowsCache.length ? "没有匹配的账户" : "暂无子账户，请先同步";
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">${emptyText}</td></tr>`;
       paintSortIndicators();
+      const count = el("account-count");
+      if (count) count.textContent = rowsCache.length ? `显示 0 / 共 ${rowsCache.length} 个` : "共 0 个";
       return;
     }
     tbody.innerHTML = list
@@ -196,7 +193,6 @@
           <td>${fmtMoney(item.settle_amount)}</td>
           <td>${fmtRoi(item.settle_roi)}</td>
           <td>${fmtRate(item.refund_rate_1h)}</td>
-          <td>${fmtMoney(item.avg_plan_profit)}</td>
           <td>
             <a class="btn" href="/plans?advertiser_id=${item.advertiser_id}">看计划</a>
           </td>
@@ -204,7 +200,45 @@
       })
       .join("");
     paintSortIndicators();
-    paintAvgProfit();
+    const count = el("account-count");
+    if (count) {
+      count.textContent = list.length === rowsCache.length
+        ? `共 ${rowsCache.length} 个`
+        : `显示 ${list.length} / 共 ${rowsCache.length} 个`;
+    }
+  }
+
+  function hideSearchMenu() {
+    const menu = el("account-search-menu");
+    if (menu) menu.classList.add("hidden");
+  }
+
+  function showSearchMenu() {
+    const menu = el("account-search-menu");
+    const input = el("account-search");
+    if (!menu || !input) return;
+    const keyword = input.value;
+    const matches = matchedAccounts(keyword);
+    if (!keyword.trim() || !matches.length) {
+      menu.classList.add("hidden");
+      menu.innerHTML = "";
+      return;
+    }
+    menu.innerHTML = matches
+      .map((item) => {
+        const name = item.advertiser_name || "未命名";
+        const safe = String(name)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+        return `<button type="button" data-pick-id="${item.advertiser_id}" data-pick-name="${safe}">
+          <div class="cell-title">${safe}</div>
+          <div class="cell-sub mono">ID: ${item.advertiser_id}</div>
+        </button>`;
+      })
+      .join("");
+    menu.classList.remove("hidden");
   }
 
   async function loadDashboard({ refresh = false } = {}) {
@@ -232,9 +266,11 @@
       rowsCache = data.accounts || [];
       renderOverview(data.overview);
       renderRows();
-      el("account-count").textContent = `共 ${data.total || 0} 个`;
       const src = data.from_cache ? "缓存" : "实时";
-      el("dash-hint").textContent = `${src} · ${data.start_date} ~ ${data.end_date}${
+      const stale = Number(data.stale_count) || 0;
+      const staleText = stale ? ` · ${stale} 个账户本次请求失败，仍显示上次数据` : "";
+      const scope = data.viewer_scope ? ` · ${data.viewer_scope}` : "";
+      el("dash-hint").textContent = `${src}${scope} · ${data.start_date} ~ ${data.end_date}${staleText}${
         data.cached_at ? ` · 缓存于 ${data.cached_at}` : ""
       }`;
     } finally {
@@ -290,21 +326,40 @@
     }
   });
 
-  const savedCommission = (localStorage.getItem(COMMISSION_KEY) || "").trim();
-  if (savedCommission && Number(savedCommission) >= 0) {
-    el("dash-commission").value = savedCommission;
-  } else if (!el("dash-commission").value) {
-    el("dash-commission").value = "20";
-  }
-  el("dash-commission").addEventListener("input", () => {
-    localStorage.setItem(COMMISSION_KEY, el("dash-commission").value);
-    if (rowsCache.length) renderRows();
+  el("account-search").addEventListener("input", () => {
+    accountKeyword = el("account-search").value;
+    pickedId = "";
+    showSearchMenu();
+    renderRows();
+  });
+
+  el("account-search").addEventListener("focus", () => {
+    if (el("account-search").value.trim()) showSearchMenu();
+  });
+
+  el("account-search-menu").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-pick-id]");
+    if (!btn) return;
+    pickedId = btn.getAttribute("data-pick-id");
+    const name = btn.getAttribute("data-pick-name") || "";
+    accountKeyword = name;
+    el("account-search").value = `${name} · ${pickedId}`;
+    hideSearchMenu();
+    renderRows();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".account-search")) hideSearchMenu();
   });
 
   el("btn-reset-filter").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
     sortKey = null;
     sortAsc = false;
+    accountKeyword = "";
+    pickedId = "";
+    el("account-search").value = "";
+    hideSearchMenu();
     paintSortIndicators();
     el("dash-range").value = "today";
     const today = localISODate(new Date());
