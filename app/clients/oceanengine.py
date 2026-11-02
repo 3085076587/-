@@ -372,6 +372,47 @@ class OceanEngineClient:
         )
         return body.get("data") or {}
 
+    async def get_available_products(
+        self,
+        advertiser_id: int,
+        product_ids: list[int],
+        *,
+        page_size: int = 100,
+    ) -> dict[int, str]:
+        """GET /v1.0/qianchuan/product/available/get/ 按 product_id 批量反查商品名。
+
+        filter.product_ids 单次最多 100 个，自动分批 + 翻页。返回 {product_id: name}。
+        适合给报表里拿到、但计划已不存在（计划列表查不到）的商品补名。
+        """
+        names: dict[int, str] = {}
+        ids = [int(p) for p in product_ids if p]
+        for i in range(0, len(ids), 100):
+            chunk = ids[i : i + 100]
+            page = 1
+            while True:
+                body = await self._request(
+                    "GET",
+                    "/v1.0/qianchuan/product/available/get/",
+                    params={
+                        "advertiser_id": advertiser_id,
+                        "page": page,
+                        "page_size": page_size,
+                        "filter": {"product_ids": chunk},
+                    },
+                )
+                data = body.get("data") or {}
+                for item in data.get("product_list") or []:
+                    pid = item.get("id")
+                    name = item.get("name")
+                    if pid and name:
+                        names[int(pid)] = str(name)
+                page_info = data.get("page_info") or {}
+                total_page = int(page_info.get("total_page") or 1)
+                if page >= total_page:
+                    break
+                page += 1
+        return names
+
     async def get_ad_report(
         self,
         advertiser_id: int,
@@ -604,6 +645,50 @@ class OceanEngineClient:
                 "end_time": end_time,
                 "marketing_goal": marketing_goal,
                 "fields": fields or default_fields,
+                "page": page,
+                "page_size": page_size,
+            },
+        )
+        return body.get("data") or {}
+
+    async def get_uni_promotion_product_data(
+        self,
+        advertiser_id: int,
+        start_date: str,
+        end_date: str,
+        *,
+        data_topic: str = "SITE_PROMOTION_PRODUCT_PRODUCT",
+        metrics: list[str] | None = None,
+        dimensions: list[str] | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
+        """GET /v1.0/qianchuan/report/uni_promotion/data/get/ 全域商品维度自定义报表。
+
+        实测契约：dimensions/filters/order_by 均必填；时间参数是 start_time/end_time，
+        格式 yyyy-MM-dd HH:mm:ss；page_size 只能 10/20/50/100/200；金额单位是元。
+        响应结构 data.rows[].dimensions / data.rows[].metrics，每格 {"Value":..,"ValueStr":..}。
+        """
+        await _pace_report()
+        default_metrics = [
+            "stat_cost",
+            "total_pay_order_gmv_for_roi2",
+            "total_prepay_and_pay_order_roi2",
+            "total_pay_order_count_for_roi2",
+            "total_order_settle_amount_for_roi2_1h",
+        ]
+        body = await self._request(
+            "GET",
+            "/v1.0/qianchuan/report/uni_promotion/data/get/",
+            params={
+                "advertiser_id": advertiser_id,
+                "data_topic": data_topic,
+                "start_time": f"{start_date} 00:00:00",
+                "end_time": f"{end_date} 23:59:59",
+                "dimensions": dimensions or ["qianchuan_product_id"],
+                "filters": [],
+                "order_by": [{"field": "stat_cost", "type": 2}],
+                "metrics": metrics or default_metrics,
                 "page": page,
                 "page_size": page_size,
             },

@@ -25,6 +25,9 @@ PLAN_FIELDS = [
     "total_refund_order_gmv_for_roi2_1h_all",
 ]
 
+# 未配置佣金时默认按 60% 计利润；用户在页面上改了则存 plan_commission。
+DEFAULT_COMMISSION_PCT = 60.0
+
 
 def _num(value: Any, default: float = 0.0) -> float:
     try:

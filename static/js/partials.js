@@ -24,10 +24,10 @@
       icon: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
     },
     {
-      key: "reports",
-      href: "/reports",
-      label: "投放报表",
-      icon: '<path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/>',
+      key: "overview",
+      href: "/overview",
+      label: "数据总览",
+      icon: '<path d="M3 3v18h18"/><path d="M7 13l3-3 3 2 4-5"/>',
     },
   ];
 

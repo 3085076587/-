@@ -13,12 +13,13 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import get_settings
-from app.core.database import Base, engine
+from app.core.database import Base, SessionLocal, engine, ensure_columns
 from app.core.exceptions import register_exception_handlers
 from app.core.redis_client import close_redis
 from app.core.response import fail
 from app.services import session_auth
-from app.services.scheduler import token_refresh_loop
+from app.services.product_report_service import seed_markers_from_daily
+from app.services.scheduler import daily_sync_loop, token_refresh_loop
 import app.models  # noqa: F401 注册 ORM 模型
 
 logger = logging.getLogger("uvicorn.error")
@@ -54,16 +55,39 @@ async def lifespan(_: FastAPI):
         Base.metadata.create_all(bind=engine)
         logger.info("数据库表已检查/创建")
 
+    added = ensure_columns()
+    if added:
+        logger.info("已补齐缺失列：%s", "、".join(added))
+
+    # 给已入库的商品日数据补写同步标记（幂等、零接口），让历史区间秒变覆盖。
+    try:
+        seed_db = SessionLocal()
+        try:
+            seeded = seed_markers_from_daily(seed_db)
+            if seeded:
+                logger.info("已补写商品同步标记 %s 条", seeded)
+        finally:
+            seed_db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("补写商品同步标记失败：%s", exc)
+
     stop_event = asyncio.Event()
     refresh_task = asyncio.create_task(token_refresh_loop(stop_event))
     logger.info("已启动 token 自动刷新定时任务")
+    daily_task = asyncio.create_task(daily_sync_loop(stop_event))
+    logger.info("已启动每日 00:01 数据入库定时任务")
     try:
         yield
     finally:
         stop_event.set()
         refresh_task.cancel()
+        daily_task.cancel()
         try:
             await refresh_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await daily_task
         except asyncio.CancelledError:
             pass
         await close_redis()
@@ -127,6 +151,12 @@ def page_auth():
 def page_advertisers():
     """子账户列表。"""
     return _render_page("advertisers.html")
+
+
+@app.get("/overview", response_class=HTMLResponse, include_in_schema=False)
+def page_overview():
+    """数据总览。"""
+    return _render_page("overview.html")
 
 
 @app.get("/plans", response_class=HTMLResponse, include_in_schema=False)

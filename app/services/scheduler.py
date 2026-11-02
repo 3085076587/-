@@ -8,11 +8,13 @@ from datetime import datetime, timedelta
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.services import dashboard_cache, token_store, workbench_session
+from app.services import daily_sync, dashboard_cache, token_store, workbench_session
 
 logger = logging.getLogger("uvicorn.error")
 
 REFRESH_AHEAD = timedelta(hours=2)
+DAILY_SYNC_HOUR = 0
+DAILY_SYNC_MINUTE = 1
 
 
 async def refresh_token_if_needed() -> None:
@@ -84,3 +86,37 @@ async def token_refresh_loop(stop_event: asyncio.Event) -> None:
             pass
         await refresh_token_if_needed()
         await warmup_dashboard_cache()
+
+
+def _seconds_until(hh: int, mm: int) -> float:
+    now = datetime.now()
+    target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def run_daily_sync() -> None:
+    """同步昨天的账户 + 商品数据入库（商品同步会顺带补当天活跃商品名）。"""
+    db = SessionLocal()
+    try:
+        day = daily_sync.yesterday_str()
+        logger.info("每日同步任务启动：目标日期 %s", day)
+        await daily_sync.sync_day_all(db, day)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("每日同步任务异常：%s", exc)
+    finally:
+        db.close()
+
+
+async def daily_sync_loop(stop_event: asyncio.Event) -> None:
+    """每天 00:01 触发一次昨日数据入库。"""
+    while not stop_event.is_set():
+        wait = _seconds_until(DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE)
+        logger.info("每日同步：距下次 %02d:%02d 还有 %.0f 秒", DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE, wait)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=wait)
+            return
+        except asyncio.TimeoutError:
+            pass
+        await run_daily_sync()

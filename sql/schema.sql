@@ -89,3 +89,63 @@ CREATE TABLE IF NOT EXISTS plan_commission (
   PRIMARY KEY (id),
   UNIQUE KEY uk_plan_commission_adv_ad (advertiser_id, ad_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='计划佣金比例';
+
+CREATE TABLE IF NOT EXISTS qianchuan_product (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  advertiser_id BIGINT NOT NULL COMMENT '千川子账户ID',
+  product_id BIGINT NOT NULL COMMENT '商品ID',
+  product_name VARCHAR(512) NOT NULL DEFAULT '' COMMENT '商品标题',
+  commission_pct DECIMAL(8,4) NULL COMMENT '商品佣金%，空则按默认 60',
+  first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '首次出现时间',
+  last_sync_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最近同步时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_adv_product (advertiser_id, product_id),
+  KEY idx_qianchuan_product_advertiser_id (advertiser_id),
+  KEY idx_qianchuan_product_product_id (product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='全域商品主档';
+
+CREATE TABLE IF NOT EXISTS qianchuan_product_daily (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  advertiser_id BIGINT NOT NULL COMMENT '千川子账户ID',
+  product_id BIGINT NOT NULL COMMENT '商品ID',
+  stat_date DATE NOT NULL COMMENT '统计日期',
+  cost DECIMAL(16,4) NOT NULL DEFAULT 0 COMMENT '消耗（元）',
+  pay_amount DECIMAL(16,4) NOT NULL DEFAULT 0 COMMENT '支付GMV（元）',
+  pay_roi DECIMAL(16,4) NULL COMMENT '支付ROI2',
+  settle_amount DECIMAL(16,4) NULL COMMENT '净成交金额（元）',
+  settle_roi DECIMAL(16,4) NULL COMMENT '净成交ROI',
+  refund_rate_1h DECIMAL(8,6) NULL COMMENT '1小时内退款率（0~1）',
+  order_count INT NOT NULL DEFAULT 0 COMMENT '成交订单数',
+  sync_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最近同步时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_adv_product_date (advertiser_id, product_id, stat_date),
+  KEY idx_qianchuan_product_daily_advertiser_id (advertiser_id),
+  KEY idx_qianchuan_product_daily_product_id (product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='全域商品按日数据';
+
+CREATE TABLE IF NOT EXISTS qianchuan_account_daily (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  advertiser_id BIGINT NOT NULL COMMENT '千川子账户ID',
+  stat_date DATE NOT NULL COMMENT '统计日期',
+  cost DECIMAL(16,4) NOT NULL DEFAULT 0 COMMENT '整体消耗（元）',
+  pay_amount DECIMAL(16,4) NOT NULL DEFAULT 0 COMMENT '用户实际支付金额（元）',
+  pay_roi DECIMAL(16,4) NULL COMMENT '整体支付ROI',
+  settle_amount DECIMAL(16,4) NULL COMMENT '净成交金额（元）',
+  settle_roi DECIMAL(16,4) NULL COMMENT '净成交ROI',
+  refund_rate_1h DECIMAL(8,6) NULL COMMENT '1小时内退款率（0~1）',
+  sync_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最近同步时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_adv_date (advertiser_id, stat_date),
+  KEY idx_qianchuan_account_daily_advertiser_id (advertiser_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账户按日数据（与子账户页工作台同源）';
+
+CREATE TABLE IF NOT EXISTS qianchuan_product_sync (
+  id INT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  advertiser_id BIGINT NOT NULL COMMENT '千川子账户ID',
+  stat_date DATE NOT NULL COMMENT '统计日期',
+  product_count INT NOT NULL DEFAULT 0 COMMENT '当天商品行数（0=已同步但无商品）',
+  sync_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最近同步时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_adv_date_sync (advertiser_id, stat_date),
+  KEY idx_qianchuan_product_sync_advertiser_id (advertiser_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品同步标记（区分"没商品"与"没同步"，供读库判定覆盖）';
