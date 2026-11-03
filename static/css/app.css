@@ -784,7 +784,7 @@ th.sortable:hover {
 
 .plans-table {
     width: 100%;
-    min-width: 1380px;
+    min-width: 1240px;
     table-layout: fixed;
     border-collapse: collapse;
 }
@@ -803,12 +803,142 @@ th.sortable:hover {
 .plans-table .col-num { width: 112px; }
 .plans-table .col-profit { width: 210px; }
 .plans-table .col-count { width: 110px; }
-.plans-table .col-op { width: 168px; }
+.plans-table .col-op { width: 84px; }
 
-.plans-table .plan-ops {
+.plans-table td.col-op,
+.plans-table th.col-op {
+    text-align: center;
+}
+
+.btn-op {
+    height: 30px;
+    padding: 0 12px;
+}
+
+.btn-danger {
+    color: var(--danger);
+    border-color: #fecaca;
+    background: #fff;
+}
+
+.btn-danger:hover { background: #fef2f2; }
+
+.drawer-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    justify-content: flex-end;
+    background: rgba(16, 40, 32, 0.38);
+}
+
+.drawer {
+    width: min(640px, 100%);
+    height: 100%;
+    background: #fff;
+    box-shadow: -12px 0 32px rgba(16, 40, 32, 0.16);
+    display: flex;
+    flex-direction: column;
+}
+
+.drawer-head,
+.drawer-foot {
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+}
+
+.drawer-head { align-items: flex-start; }
+
+.drawer-foot {
+    border-bottom: 0;
+    border-top: 1px solid var(--border);
+}
+
+.drawer-head h3 {
+    font-size: 16px;
+    line-height: 1.4;
+}
+
+.drawer-sub {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.drawer-body {
+    flex: 1;
+    overflow: auto;
+    padding: 0 18px 18px;
+}
+
+.drawer-section {
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.drawer-section:last-child { border-bottom: 0; }
+
+.drawer-section h4 {
+    margin-bottom: 10px;
+    font-size: 14px;
+}
+
+.drawer-section .field {
+    min-width: 0;
+    margin-top: 10px;
+}
+
+.drawer-section .field:first-of-type { margin-top: 0; }
+
+.drawer-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+.drawer-pick {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text);
+}
+
+.drawer .log-table-wrap {
+    max-height: 280px;
+}
+
+.drawer .create-dates {
+    margin-top: 10px;
+}
+
+.log-table-wrap {
+    margin-top: 12px;
+    max-height: 420px;
+    overflow: auto;
+}
+
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.log-table th,
+.log-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.log-table .log-focus td {
+    background: rgba(20, 184, 166, 0.08);
 }
 
 .plans-table td.col-info,

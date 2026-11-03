@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -341,3 +342,136 @@ async def update_roi_with_reminder(db: Session, payload: UpdateRoiIn) -> dict[st
     ).model_dump()
     out["reminder"] = reminder
     return out
+
+
+_SHANGHAI = timezone(timedelta(hours=8))
+_FOCUS_WORDS = ("roi", "预算", "budget", "启停", "暂停", "启用", "开关", "opt_status", "enable", "disable", "投放状态")
+_CHANGE_RE = re.compile(
+    r"^(?P<field>.+?)[:：]\s*(?P<before>.+?)\s*(?:->|→|=>|改为|修改为)\s*(?P<after>.+)$"
+)
+_FROM_TO_RE = re.compile(r"从(?P<before>.+?)(?:修改|调整)?为(?P<after>.+)$")
+
+
+def _is_focus(*parts: object) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    return any(word.lower() in text for word in _FOCUS_WORDS)
+
+
+def _change_from_text(text: str) -> dict[str, Any]:
+    raw = text.strip()
+    matched = _CHANGE_RE.match(raw) or _FROM_TO_RE.search(raw)
+    if matched:
+        field = str(matched.groupdict().get("field") or "").strip()
+        before = str(matched.group("before") or "").strip()
+        after = str(matched.group("after") or "").strip()
+    else:
+        field, before, after = "", "", raw
+    return {
+        "field": field,
+        "before": before,
+        "after": after,
+        "raw": raw,
+        "focus": _is_focus(field, before, after, raw),
+    }
+
+
+def _change_from_item(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        field = str(item.get("field") or item.get("name") or item.get("key") or item.get("title") or "")
+        before = item.get("old")
+        if before is None:
+            before = item.get("before") or item.get("old_value") or item.get("origin") or ""
+        after = item.get("new")
+        if after is None:
+            after = item.get("after") or item.get("new_value") or item.get("update") or ""
+        raw = str(item.get("content") or item.get("text") or "")
+        if not raw:
+            raw = f"{field}: {before} -> {after}".strip(": ")
+        return {
+            "field": field,
+            "before": str(before),
+            "after": str(after),
+            "raw": raw,
+            "focus": _is_focus(field, before, after, raw),
+        }
+    return _change_from_text(str(item or ""))
+
+
+def _log_rows(entry: dict[str, Any]) -> dict[str, Any]:
+    changes = [_change_from_item(item) for item in entry.get("content_log") or []]
+    for sub in entry.get("sub_logs") or []:
+        if not isinstance(sub, dict):
+            continue
+        title = str(sub.get("content_title") or "")
+        for item in sub.get("content_log") or []:
+            change = _change_from_item(item)
+            if title and not change["field"]:
+                change["field"] = title
+                change["focus"] = _is_focus(title, change["before"], change["after"], change["raw"])
+            changes.append(change)
+    changes.sort(key=lambda row: 0 if row["focus"] else 1)
+    return {
+        "create_time": str(entry.get("create_time") or ""),
+        "operator_name": str(entry.get("operator_name") or entry.get("operator") or entry.get("operator_id") or ""),
+        "content_title": str(entry.get("content_title") or ""),
+        "changes": changes,
+    }
+
+
+def _log_window(start_date: str, end_date: str) -> tuple[str, str]:
+    today = datetime.now(_SHANGHAI).date()
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError as exc:
+        raise AppError("日志时间格式要用 yyyy-mm-dd") from exc
+    if end < start:
+        raise AppError("结束日期不能早于开始日期")
+    earliest = today - timedelta(days=180)
+    if start < earliest:
+        start = earliest
+    if end > today:
+        end = today
+    now = datetime.now(_SHANGHAI)
+    end_time = f"{end.isoformat()} 23:59:59"
+    if end == today:
+        end_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    return f"{start.isoformat()} 00:00:00", end_time
+
+
+async def list_plan_logs(
+    db: Session,
+    advertiser_id: int,
+    ad_id: int,
+    start_date: str,
+    end_date: str,
+    page: int = 1,
+) -> dict[str, Any]:
+    start_time, end_time = _log_window(start_date, end_date)
+    client = await token_store.build_client(db)
+    try:
+        data = await client.search_operation_logs(
+            advertiser_id,
+            ad_id,
+            start_time,
+            end_time,
+            page=max(1, page),
+            page_size=20,
+        )
+    except OceanEngineApiError as exc:
+        message = exc.msg
+        if any(word in message for word in ("权限", "permission", "scope", "无权限")):
+            message = f"{message}。这个接口需要【工具-查询工具】权限，开通后要重新授权。"
+        raise AppError(message, data=exc.data) from exc
+    page_info = data.get("page_info") or {}
+    logs = [_log_rows(entry) for entry in data.get("logs") or [] if isinstance(entry, dict)]
+    return {
+        "advertiser_id": advertiser_id,
+        "ad_id": str(ad_id),
+        "start_time": start_time,
+        "end_time": end_time,
+        "logs": logs,
+        "page": int(page_info.get("page") or page or 1),
+        "total_page": int(page_info.get("total_page") or 1),
+        "total": int(page_info.get("total_number") or len(logs)),
+    }

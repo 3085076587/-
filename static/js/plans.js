@@ -6,6 +6,8 @@
   const commissionTimers = {};
   let plansCache = [];
   let listMeta = null;
+  const pickedIds = new Set();
+  let opAdId = "";
 
   function localISODate(d) {
     const y = d.getFullYear();
@@ -197,14 +199,7 @@
           </td>
           <td class="col-count"><span class="countdown" data-remind-ad="${item.ad_id}">-</span></td>
           <td class="col-op">
-            <div class="plan-ops">
-              <input type="checkbox" data-pick-ad="${item.ad_id}" aria-label="选择计划">
-              <button class="btn btn-accent"
-                data-edit-roi="${item.ad_id}"
-                data-roi="${item.roi2_goal ?? ""}"
-                data-name="${(item.ad_name || "").replace(/"/g, "&quot;")}">设 ROI</button>
-              <button class="btn" type="button" data-delete-ad="${item.ad_id}">删除</button>
-            </div>
+            <button class="btn btn-op" type="button" data-open-op="${item.ad_id}">操作</button>
           </td>
         </tr>`;
       })
@@ -233,9 +228,19 @@
     try {
       const data = await api(`/api/plan/uni/list?${qs.toString()}`);
       plansCache = data.plans || [];
+      const alive = new Set(plansCache.map((row) => String(row.ad_id)));
+      for (const id of [...pickedIds]) {
+        if (!alive.has(id)) pickedIds.delete(id);
+      }
       listMeta = { total: data.total || 0, start, end };
       renderPlans(plansCache);
+      paintBatch();
       paintHint();
+      if (opAdId) {
+        const current = plansCache.find((row) => String(row.ad_id) === opAdId);
+        if (current) paintDrawerSummary(current);
+        else closeOpDrawer();
+      }
       await migrateLocalCommission();
     } catch (err) {
       el("plan-tbody").innerHTML = `<tr><td colspan="12" class="empty">${err.message || "拉取失败"}</td></tr>`;
@@ -244,16 +249,31 @@
     }
   }
 
-  function openRoiModal(adId, currentRoi, name) {
-    el("roi-ad-id").value = adId;
-    el("roi-ad-name").value = name || "";
-    el("roi-ad-label").textContent = `${name || "-"}（ID: ${adId}）`;
-    el("roi-value").value = currentRoi === "" || currentRoi == null ? "" : currentRoi;
-    el("roi-modal").classList.remove("hidden");
+  function paintBatch() {
+    const count = pickedIds.size;
+    el("btn-delete-plans").textContent = count ? `批量删除（${count}）` : "批量删除";
   }
 
-  function closeRoiModal() {
-    el("roi-modal").classList.add("hidden");
+  function paintDrawerSummary(item) {
+    el("op-title").textContent = item.ad_name || "计划操作";
+    const budget = item.budget != null ? item.budget : "-";
+    el("op-sub").textContent = `ID ${item.ad_id} · ${statusText(item.status_label)} · 预算 ${budget} · ROI目标 ${fmtRoi(item.roi2_goal)}`;
+  }
+
+  function closeOpDrawer() {
+    el("op-drawer").classList.add("hidden");
+    opAdId = "";
+  }
+
+  function openOpDrawer(item) {
+    opAdId = String(item.ad_id);
+    paintDrawerSummary(item);
+    el("roi-ad-id").value = item.ad_id;
+    el("roi-ad-name").value = item.ad_name || "";
+    el("roi-value").value = item.roi2_goal == null ? "" : item.roi2_goal;
+    el("op-pick").checked = pickedIds.has(opAdId);
+    el("op-drawer").classList.remove("hidden");
+    openPlanLogs(item.ad_id);
   }
 
   function parsedCommission(raw) {
@@ -362,9 +382,7 @@
   });
 
   function selectedPlans() {
-    return Array.from(document.querySelectorAll("[data-pick-ad]:checked"))
-      .map((node) => plansCache.find((row) => String(row.ad_id) === node.getAttribute("data-pick-ad")))
-      .filter(Boolean);
+    return plansCache.filter((row) => pickedIds.has(String(row.ad_id)));
   }
 
   async function deletePlans(items) {
@@ -396,29 +414,110 @@
         })),
       }),
     });
+    items.forEach((item) => pickedIds.delete(String(item.ad_id)));
+    const removedOpen = items.some((item) => String(item.ad_id) === opAdId);
     toast("计划已删除");
     await loadPlans();
+    if (removedOpen) closeOpDrawer();
+    paintBatch();
+  }
+
+  let logAdId = "";
+  let logPage = 1;
+  let logTotalPage = 1;
+
+  function renderLogs(logs) {
+    const body = el("log-tbody");
+    const rows = [];
+    (logs || []).forEach((entry) => {
+      const changes = entry.changes && entry.changes.length
+        ? entry.changes
+        : [{ field: "", before: "", after: entry.content_title || "-", focus: false, raw: "" }];
+      changes.forEach((change) => {
+        const before = change.before || (change.field ? "" : change.raw || "-");
+        const after = change.after || "-";
+        const kind = change.field || entry.content_title || "-";
+        rows.push(`<tr class="${change.focus ? "log-focus" : ""}">
+          <td>${esc(entry.create_time || "-")}</td>
+          <td>${esc(entry.operator_name || "-")}</td>
+          <td>${esc(kind)}</td>
+          <td>${esc(before || "-")}</td>
+          <td>${esc(after || "-")}</td>
+        </tr>`);
+      });
+    });
+    body.innerHTML = rows.length
+      ? rows.join("")
+      : '<tr><td colspan="5" class="empty">这个时间段没有操作日志</td></tr>';
+  }
+
+  async function loadPlanLogs(page) {
+    if (!logAdId) return;
+    logPage = page;
+    const qs = new URLSearchParams({
+      advertiser_id: el("plan-advertiser").value,
+      ad_id: logAdId,
+      start_date: el("log-start").value,
+      end_date: el("log-end").value,
+      page: String(page),
+    });
+    const data = await api(`/api/plan/uni/logs?${qs.toString()}`);
+    logTotalPage = data.total_page || 1;
+    el("log-page-label").textContent = `第 ${data.page || page} / ${logTotalPage} 页，共 ${data.total || 0} 条`;
+    renderLogs(data.logs || []);
+  }
+
+  function openPlanLogs(adId) {
+    logAdId = String(adId);
+    const range = rangeDates();
+    el("log-start").value = range.start;
+    el("log-end").value = range.end;
+    el("log-tbody").innerHTML = '<tr><td colspan="5" class="empty">正在查询…</td></tr>';
+    loadPlanLogs(1).catch((err) => {
+      el("log-tbody").innerHTML = `<tr><td colspan="5" class="empty">${esc(err.message)}</td></tr>`;
+      toast(err.message, "error");
+    });
   }
 
   document.body.addEventListener("click", (event) => {
-    const roiBtn = event.target.closest("[data-edit-roi]");
-    if (roiBtn) {
-      openRoiModal(
-        roiBtn.getAttribute("data-edit-roi"),
-        roiBtn.getAttribute("data-roi"),
-        roiBtn.getAttribute("data-name")
-      );
-    }
-    const deleteBtn = event.target.closest("[data-delete-ad]");
-    if (deleteBtn) {
-      const item = plansCache.find((row) => String(row.ad_id) === deleteBtn.getAttribute("data-delete-ad"));
-      if (!item) return;
-      deletePlans([item]).catch((err) => toast(err.message, "error"));
-    }
+    const openBtn = event.target.closest("[data-open-op]");
+    if (!openBtn) return;
+    const item = plansCache.find((row) => String(row.ad_id) === openBtn.getAttribute("data-open-op"));
+    if (!item) return;
+    openOpDrawer(item);
   });
 
   el("btn-delete-plans").addEventListener("click", () => {
     deletePlans(selectedPlans()).catch((err) => toast(err.message, "error"));
+  });
+  el("op-close").addEventListener("click", closeOpDrawer);
+  el("op-drawer").addEventListener("click", (event) => {
+    if (event.target === el("op-drawer")) closeOpDrawer();
+  });
+  el("op-pick").addEventListener("change", () => {
+    if (!opAdId) return;
+    if (el("op-pick").checked) pickedIds.add(opAdId);
+    else pickedIds.delete(opAdId);
+    paintBatch();
+  });
+  el("op-delete").addEventListener("click", () => {
+    const item = plansCache.find((row) => String(row.ad_id) === opAdId);
+    if (!item) return;
+    deletePlans([item]).catch((err) => toast(err.message, "error"));
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !el("op-drawer").classList.contains("hidden")) closeOpDrawer();
+  });
+  el("btn-log-search").addEventListener("click", () => {
+    loadPlanLogs(1).catch((err) => toast(err.message, "error"));
+  });
+  el("btn-log-prev").addEventListener("click", () => {
+    if (logPage <= 1) return;
+    loadPlanLogs(logPage - 1).catch((err) => toast(err.message, "error"));
+  });
+  el("btn-log-next").addEventListener("click", () => {
+    if (logPage >= logTotalPage) return;
+    loadPlanLogs(logPage + 1).catch((err) => toast(err.message, "error"));
   });
 
   function remindSeconds() {
@@ -436,7 +535,6 @@
     el("roi-remind-custom-wrap").classList.toggle("hidden", !custom);
   });
 
-  el("btn-roi-cancel").addEventListener("click", closeRoiModal);
   el("btn-roi-save").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
     const advertiserId = el("plan-advertiser").value;
@@ -465,7 +563,6 @@
         }),
       });
       toast(data.reminder ? "ROI 已更新，倒计时已开始" : "ROI 已更新");
-      closeRoiModal();
       await loadPlans();
       if (window.AdReminders) window.AdReminders.refresh();
     } catch (err) {

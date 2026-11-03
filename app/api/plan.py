@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.exceptions import AppError
 from app.core.response import ok
 from app.schemas.plan import CreateUniPlanIn, DeletePlansIn, SaveCommissionIn, UpdateRoiIn, UpdateStatusIn
 from app.services import plan_service, uni_create_service, uni_plan_service
@@ -57,6 +58,27 @@ async def save_commission(payload: SaveCommissionIn, request: Request, db: Sessi
         payload.advertiser_id,
         payload.ad_id,
         payload.commission_pct,
+    )
+    return ok(data)
+
+
+@router.get("/plan/uni/logs", summary="全域商品计划操作日志")
+async def list_uni_plan_logs(
+    request: Request,
+    advertiser_id: int = Query(..., description="千川子账户 ID"),
+    ad_id: str = Query(..., description="计划 ID"),
+    start_date: str = Query(..., description="开始日期 yyyy-mm-dd"),
+    end_date: str = Query(..., description="结束日期 yyyy-mm-dd"),
+    page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
+    try:
+        plan_id = int(str(ad_id).strip())
+    except ValueError as exc:
+        raise AppError("计划 ID 不正确") from exc
+    data = await uni_plan_service.list_plan_logs(
+        db, advertiser_id, plan_id, start_date, end_date, page
     )
     return ok(data)
 

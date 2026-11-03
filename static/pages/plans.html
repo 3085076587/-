@@ -6,7 +6,7 @@
   <title>计划与 ROI · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261103m">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261103o">
 </head>
 <body>
 <div class="layout">
@@ -85,42 +85,91 @@
   </div>
 </div>
 
-<div class="modal-mask hidden" id="roi-modal">
-  <div class="modal modal-lg">
-    <h3>设置净成交 ROI 目标</h3>
-    <input type="hidden" id="roi-ad-id">
-    <input type="hidden" id="roi-ad-name">
-    <div class="field">
-      <label>计划</label>
-      <div class="muted" id="roi-ad-label">-</div>
+<div class="drawer-mask hidden" id="op-drawer">
+  <aside class="drawer" role="dialog" aria-labelledby="op-title">
+    <div class="drawer-head">
+      <div>
+        <h3 id="op-title">计划操作</h3>
+        <p class="drawer-sub" id="op-sub"></p>
+      </div>
+      <button class="btn" id="op-close" type="button">关闭</button>
     </div>
-    <div class="field" style="margin-top:10px;">
-      <label>净成交 ROI 目标</label>
-      <input id="roi-value" type="number" min="0.01" step="0.01" placeholder="例如 2.23">
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h4>设置 ROI</h4>
+        <input type="hidden" id="roi-ad-id">
+        <input type="hidden" id="roi-ad-name">
+        <div class="field">
+          <label>净成交 ROI 目标</label>
+          <input id="roi-value" type="number" min="0.01" step="0.01" placeholder="例如 2.23">
+        </div>
+        <div class="field">
+          <label>提醒时间</label>
+          <select id="roi-remind">
+            <option value="0">不提醒</option>
+            <option value="300">5 分钟</option>
+            <option value="600">10 分钟</option>
+            <option value="900">15 分钟</option>
+            <option value="1800">30 分钟</option>
+            <option value="3600" selected>1 小时</option>
+            <option value="7200">2 小时</option>
+            <option value="10800">3 小时</option>
+            <option value="custom">自定义分钟…</option>
+          </select>
+        </div>
+        <div class="field hidden" id="roi-remind-custom-wrap">
+          <label>自定义分钟数</label>
+          <input id="roi-remind-custom" type="number" min="1" step="1" placeholder="例如 45">
+        </div>
+        <div class="drawer-actions">
+          <button class="btn btn-accent" id="btn-roi-save" type="button">确认修改</button>
+        </div>
+      </section>
+      <section class="drawer-section">
+        <h4 id="log-title">操作日志</h4>
+        <p class="hint">重点是 ROI、预算和启停。缺少【工具-查询工具】权限时，接口会直接报错。</p>
+        <div class="create-dates">
+          <div class="field">
+            <label>开始日期</label>
+            <input id="log-start" type="date">
+          </div>
+          <div class="field">
+            <label>结束日期</label>
+            <input id="log-end" type="date">
+          </div>
+        </div>
+        <div class="create-page">
+          <button class="btn" id="btn-log-search" type="button">查询日志</button>
+          <button class="btn" id="btn-log-prev" type="button">上一页</button>
+          <span class="muted" id="log-page-label">第 1 页</span>
+          <button class="btn" id="btn-log-next" type="button">下一页</button>
+        </div>
+        <div class="table-wrap log-table-wrap">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th>操作时间</th>
+                <th>操作人</th>
+                <th>操作类型</th>
+                <th>变更前</th>
+                <th>变更后</th>
+              </tr>
+            </thead>
+            <tbody id="log-tbody">
+              <tr><td colspan="5" class="empty">请查询</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
-    <div class="field" style="margin-top:10px;">
-      <label>提醒时间</label>
-      <select id="roi-remind">
-        <option value="0">不提醒</option>
-        <option value="300">5 分钟</option>
-        <option value="600">10 分钟</option>
-        <option value="900">15 分钟</option>
-        <option value="1800">30 分钟</option>
-        <option value="3600" selected>1 小时</option>
-        <option value="7200">2 小时</option>
-        <option value="10800">3 小时</option>
-        <option value="custom">自定义分钟…</option>
-      </select>
+    <div class="drawer-foot">
+      <label class="drawer-pick">
+        <input id="op-pick" type="checkbox">
+        加入批量删除
+      </label>
+      <button class="btn btn-danger" id="op-delete" type="button">删除此计划</button>
     </div>
-    <div class="field hidden" id="roi-remind-custom-wrap" style="margin-top:10px;">
-      <label>自定义分钟数</label>
-      <input id="roi-remind-custom" type="number" min="1" step="1" placeholder="例如 45">
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="btn-roi-cancel">取消</button>
-      <button class="btn btn-accent" id="btn-roi-save">确认修改</button>
-    </div>
-  </div>
+  </aside>
 </div>
 
 <div class="modal-mask hidden" id="create-modal">
@@ -221,11 +270,12 @@
   </div>
 </div>
 
+
 <div id="reminder-stack" class="reminder-stack" aria-live="polite"></div>
 
 <script src="/static/js/common.js"></script>
 <script src="/static/js/partials.js"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/plans.js?v=20261103l"></script>
+<script src="/static/js/plans.js?v=20261103o"></script>
 </body>
 </html>

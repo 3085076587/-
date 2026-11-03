@@ -802,3 +802,29 @@ class OceanEngineClient:
                 data=body,
             )
         return body.get("data") or {}
+
+    async def search_operation_logs(
+        self,
+        advertiser_id: int,
+        object_id: int,
+        start_time: str,
+        end_time: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        """GET /v1.0/qianchuan/tools/log_search/ 计划操作日志。需要工具-查询工具权限。"""
+        body = await self._request(
+            "GET",
+            "/v1.0/qianchuan/tools/log_search/",
+            params={
+                "advertiser_id": advertiser_id,
+                "object_type": "AD",
+                "object_id": object_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "page": page,
+                "page_size": page_size,
+            },
+        )
+        return body.get("data") or {}
