@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import logging
 from datetime import datetime, timedelta
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.core.log_setup import setup_task_logging
-from app.services import daily_sync, dashboard_cache, token_store, workbench_session
+from app.services import daily_sync, dashboard_cache, overview_service, token_store, workbench_session
 
-# 定时任务专用 logger：明文写入 logs/scheduler.log（带时间戳、按天轮转），并保留终端输出
-logger = setup_task_logging()
+logger = logging.getLogger("uvicorn.error")
 
 REFRESH_AHEAD = timedelta(hours=2)
 DAILY_SYNC_HOUR = 0
 DAILY_SYNC_MINUTE = 1
+OVERVIEW_TODAY_SECONDS = 15 * 60
 
 
 async def refresh_token_if_needed() -> None:
@@ -45,38 +44,61 @@ async def refresh_token_if_needed() -> None:
 
 
 async def refresh_workbench_if_needed() -> None:
-    started = time.perf_counter()
     db = SessionLocal()
     try:
         await workbench_session.keepalive(db)
-        logger.info("工作台登录保活成功：耗时 %.1f 秒", time.perf_counter() - started)
     except Exception as exc:
-        logger.exception(
-            "工作台登录保活失败：耗时 %.1f 秒，原因：%s", time.perf_counter() - started, exc
-        )
+        logger.exception("工作台登录保活失败：%s", exc)
     finally:
         db.close()
 
 
 async def warmup_dashboard_cache() -> None:
-    started = time.perf_counter()
     db = SessionLocal()
     try:
         await dashboard_cache.warmup_all_presets(db)
-        logger.info("仪表盘缓存预热成功：耗时 %.1f 秒", time.perf_counter() - started)
     except Exception as exc:
-        logger.exception(
-            "仪表盘缓存预热失败：耗时 %.1f 秒，原因：%s", time.perf_counter() - started, exc
-        )
+        logger.exception("仪表盘缓存预热失败：%s", exc)
     finally:
         db.close()
+
+
+async def refresh_overview_today(*, force: bool) -> None:
+    """刷新今天总览缓存。force 为假时缓存还在就直接用，不打巨量。"""
+    db = SessionLocal()
+    try:
+        data = await overview_service.load_today_snapshot(db, force=force)
+        if data.get("from_cache") and not force:
+            logger.info("今天的数据总览仍用缓存")
+        else:
+            logger.info("今天的数据总览已写入缓存，%s 秒后更新", OVERVIEW_TODAY_SECONDS)
+    except Exception as exc:
+        logger.exception("今天的数据总览刷新失败：%s", exc)
+    finally:
+        db.close()
+
+
+async def overview_today_loop(stop_event: asyncio.Event) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=20)
+        return
+    except asyncio.TimeoutError:
+        pass
+    # 刚启动时缓存还有效就接着用，避免每次重启都把全部账户再打一遍。
+    await refresh_overview_today(force=False)
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=OVERVIEW_TODAY_SECONDS)
+            break
+        except asyncio.TimeoutError:
+            pass
+        await refresh_overview_today(force=True)
 
 
 async def token_refresh_loop(stop_event: asyncio.Event) -> None:
     """启动后循环：token 检查 + 预设区间缓存预热。"""
     settings = get_settings()
     interval = max(60, int(settings.DASHBOARD_CACHE_INTERVAL_SECONDS or 1800))
-    logger.info("Token 刷新 / 缓存预热循环已启动：间隔 %s 秒", interval)
 
     try:
         await asyncio.wait_for(stop_event.wait(), timeout=20)
@@ -110,31 +132,18 @@ def _seconds_until(hh: int, mm: int) -> float:
 async def run_daily_sync() -> None:
     """同步昨天的账户 + 商品数据入库（商品同步会顺带补当天活跃商品名）。"""
     db = SessionLocal()
-    day = daily_sync.yesterday_str()
-    started = time.perf_counter()
-    logger.info("每日同步任务启动：目标日期 %s", day)
     try:
-        result = await daily_sync.sync_day_all(db, day)
-        logger.info(
-            "每日同步任务成功：目标日期 %s，耗时 %.1f 秒，结果 %s",
-            day,
-            time.perf_counter() - started,
-            result,
-        )
+        day = daily_sync.yesterday_str()
+        logger.info("每日同步任务启动：目标日期 %s", day)
+        await daily_sync.sync_day_all(db, day)
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "每日同步任务失败：目标日期 %s，耗时 %.1f 秒，原因：%s",
-            day,
-            time.perf_counter() - started,
-            exc,
-        )
+        logger.exception("每日同步任务异常：%s", exc)
     finally:
         db.close()
 
 
 async def daily_sync_loop(stop_event: asyncio.Event) -> None:
     """每天 00:01 触发一次昨日数据入库。"""
-    logger.info("每日入库循环已启动：每天 %02d:%02d 触发", DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE)
     while not stop_event.is_set():
         wait = _seconds_until(DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE)
         logger.info("每日同步：距下次 %02d:%02d 还有 %.0f 秒", DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE, wait)

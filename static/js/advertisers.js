@@ -172,7 +172,7 @@
     const tbody = el("advertiser-tbody");
     if (!list.length) {
       const emptyText = rowsCache.length ? "没有匹配的账户" : "暂无子账户，请先同步";
-      tbody.innerHTML = `<tr><td colspan="9" class="empty">${emptyText}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" class="empty">${emptyText}</td></tr>`;
       paintSortIndicators();
       const count = el("account-count");
       if (count) count.textContent = rowsCache.length ? `显示 0 / 共 ${rowsCache.length} 个` : "共 0 个";
@@ -193,6 +193,7 @@
           <td>${fmtMoney(item.settle_amount)}</td>
           <td>${fmtRoi(item.settle_roi)}</td>
           <td>${fmtRate(item.refund_rate_1h)}</td>
+          <td>${fmtMoney(item.profit)}</td>
           <td>
             <a class="btn" href="/plans?advertiser_id=${item.advertiser_id}">看计划</a>
           </td>
@@ -270,9 +271,19 @@
       const stale = Number(data.stale_count) || 0;
       const staleText = stale ? ` · ${stale} 个账户本次请求失败，仍显示上次数据` : "";
       const scope = data.viewer_scope ? ` · ${data.viewer_scope}` : "";
+      const profitNote = data.profit_note ? ` · ${data.profit_note}` : "";
       el("dash-hint").textContent = `${src}${scope} · ${data.start_date} ~ ${data.end_date}${staleText}${
         data.cached_at ? ` · 缓存于 ${data.cached_at}` : ""
-      }`;
+      }${profitNote}`;
+      const profitHint = el("profit-hint");
+      if (profitHint) {
+        profitHint.textContent = data.profit_note
+          ? data.profit_note
+          : "利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。今天把该店铺各商品利润相加，用的是总览那份 15 分钟缓存。10月1日之前没有商品日数据。";
+      }
+      if (data.profit_note && String(data.profit_note).indexOf("没有10月份以前的数据") >= 0) {
+        toast(data.profit_note, "warn");
+      }
     } finally {
       stopFlag.done = true;
       if (pollTask) await pollTask.catch(() => {});

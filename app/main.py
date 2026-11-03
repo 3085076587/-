@@ -15,12 +15,11 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine, ensure_columns
 from app.core.exceptions import register_exception_handlers
-from app.core.log_setup import get_task_logger
 from app.core.redis_client import close_redis
 from app.core.response import fail
 from app.services import session_auth
 from app.services.product_report_service import seed_markers_from_daily
-from app.services.scheduler import daily_sync_loop, token_refresh_loop
+from app.services.scheduler import daily_sync_loop, overview_today_loop, token_refresh_loop
 import app.models  # noqa: F401 注册 ORM 模型
 
 logger = logging.getLogger("uvicorn.error")
@@ -77,19 +76,25 @@ async def lifespan(_: FastAPI):
     logger.info("已启动 token 自动刷新定时任务")
     daily_task = asyncio.create_task(daily_sync_loop(stop_event))
     logger.info("已启动每日 00:01 数据入库定时任务")
-    get_task_logger().info("===== 服务启动：定时任务已全部挂载（明文日志见 logs/scheduler.log）=====")
+    today_task = asyncio.create_task(overview_today_loop(stop_event))
+    logger.info("已启动今天数据总览 15 分钟刷新")
     try:
         yield
     finally:
         stop_event.set()
         refresh_task.cancel()
         daily_task.cancel()
+        today_task.cancel()
         try:
             await refresh_task
         except asyncio.CancelledError:
             pass
         try:
             await daily_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await today_task
         except asyncio.CancelledError:
             pass
         await close_redis()

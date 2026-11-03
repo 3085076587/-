@@ -83,7 +83,7 @@
           </div>
           <button class="btn" type="button" id="btn-reset-filter">重置筛选</button>
         </div>
-        <p class="hint">1小时内退款率已在接口数值上加 5 个百分点。</p>
+        <p class="hint" id="profit-hint">利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。今天把该店铺各商品利润相加，用的是总览那份 15 分钟缓存。10月1日之前没有商品日数据。</p>
         <div class="table-wrap">
           <table id="adv-table">
             <thead>
@@ -96,11 +96,12 @@
                 <th class="sortable" data-sort="settle_amount">净成交金额 <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="settle_roi">净成交ROI <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="rate-extra">已加5%</span> <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="profit">利润 <span class="sort-ind"></span></th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="advertiser-tbody">
-              <tr><td colspan="9" class="empty">正在加载…</td></tr>
+              <tr><td colspan="10" class="empty">正在加载…</td></tr>
             </tbody>
           </table>
         </div>
@@ -121,6 +122,6 @@
 <script src="/static/js/common.js"></script>
 <script src="/static/js/partials.js"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/advertisers.js?v=20261031j"></script>
+<script src="/static/js/advertisers.js?v=20261103c"></script>
 </body>
 </html>

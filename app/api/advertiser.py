@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.response import ok
 from app.services import advertiser_dashboard as advertiser_dashboard_service
-from app.services import advertiser_service, dashboard_cache
+from app.services import advertiser_service, dashboard_cache, overview_service
 from app.services.account_access import current_username, is_admin
 
 router = APIRouter(tags=["Advertiser"])
@@ -21,6 +21,18 @@ def _people_for(db: Session, username: str) -> list[str]:
 def _stamp(data: dict, username: str) -> dict:
     data["viewer"] = username
     data["viewer_scope"] = "全部人员" if is_admin(username) else username
+    return data
+
+
+async def _attach_profits(db: Session, data: dict) -> dict:
+    """利润不进工作台缓存。今天读总览缓存，历史读商品日表。"""
+    start = data.get("start_date") or date.today().isoformat()
+    end = data.get("end_date") or start
+    profits, note = await overview_service.shop_profits(db, start, end)
+    data["profit_note"] = note
+    for acc in data.get("accounts") or []:
+        adv_id = int(acc.get("advertiser_id") or 0)
+        acc["profit"] = None if profits is None else profits.get(adv_id, 0.0)
     return data
 
 
@@ -53,6 +65,7 @@ async def get_advertiser_dashboard(
         data = await dashboard_cache.fetch_people(
             db, range_key, people, force=refresh, scope_all=is_admin(username)
         )
+        await _attach_profits(db, data)
         return ok(_stamp(data, username))
 
     today = date.today().isoformat()
@@ -72,6 +85,7 @@ async def get_advertiser_dashboard(
         parts.append(part)
     data = dashboard_cache.merge_dashboards(parts)
     data["range"] = "custom"
+    await _attach_profits(db, data)
     return ok(_stamp(data, username))
 
 

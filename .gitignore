@@ -4,7 +4,6 @@ __pycache__/
 .env
 .cursor/
 *.log
-logs/
 tools/
 dump.rdb
 float

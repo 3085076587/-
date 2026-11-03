@@ -11,6 +11,8 @@
   let summary = null;
   let isAdmin = false;
   let progressTimer = null;
+  let querying = false;
+  let fillingPeople = false;
   const charts = {};
   const chartRows = {};
 
@@ -21,10 +23,43 @@
     return `${y}-${m}-${day}`;
   }
 
-  function yesterdayISO() {
+  function todayISO() {
+    return localISODate(new Date());
+  }
+
+  function shiftISO(days) {
     const d = new Date();
-    d.setDate(d.getDate() - 1);
+    d.setDate(d.getDate() + days);
     return localISODate(d);
+  }
+
+  function rangeDates(key) {
+    const today = todayISO();
+    if (key === "yesterday") {
+      const day = shiftISO(-1);
+      return { start: day, end: day };
+    }
+    if (key === "7") return { start: shiftISO(-6), end: today };
+    if (key === "30") return { start: shiftISO(-29), end: today };
+    return { start: today, end: today };
+  }
+
+  function showCustomDates(show) {
+    document.querySelectorAll(".ov-custom").forEach((node) => {
+      node.classList.toggle("hidden", !show);
+    });
+  }
+
+  function applyRange(key) {
+    showCustomDates(key === "custom");
+    if (key === "custom") {
+      if (!el("ov-start").value) el("ov-start").value = todayISO();
+      if (!el("ov-end").value) el("ov-end").value = todayISO();
+      return;
+    }
+    const span = rangeDates(key);
+    el("ov-start").value = span.start;
+    el("ov-end").value = span.end;
   }
 
   function money(v) {
@@ -75,7 +110,7 @@
         body: JSON.stringify({ product_id: item.pid, commission_pct: pct }),
       });
       toast("佣金已保存，重新加载中", "success");
-      await load(true);
+      await load(false);
     } catch (err) {
       toast(err.message, "error");
     }
@@ -176,6 +211,7 @@
   function fillPersonOptions() {
     const sel = el("ov-person");
     const current = sel.value;
+    fillingPeople = true;
     sel.innerHTML =
       '<option value="">全部</option>' +
       summary.people
@@ -183,6 +219,7 @@
           (p) => `<option value="${p.name}"${p.name === current ? " selected" : ""}>${p.name}</option>`
         )
         .join("");
+    fillingPeople = false;
   }
 
   function stopProgress() {
@@ -212,16 +249,14 @@
 
   async function load(refresh) {
     const start = el("ov-start").value;
-    let end = el("ov-end").value;
+    const end = el("ov-end").value;
     if (!start || !end) {
       toast("请选择日期范围", "warn");
       return;
     }
-    // 后端不含当天：前端同步把结束日期夹到昨天，避免进度 key 与后端不一致。
-    const cap = yesterdayISO();
-    if (end > cap) {
-      end = cap;
-      el("ov-end").value = cap;
+    if (start > end) {
+      toast("开始日期不能晚于结束日期", "warn");
+      return;
     }
     el("loading-mask").classList.remove("hidden");
     startProgress(`${start}~${end}`);
@@ -237,6 +272,18 @@
     } finally {
       stopProgress();
       el("loading-mask").classList.add("hidden");
+    }
+  }
+
+  async function runQuery(button) {
+    if (querying) return;
+    querying = true;
+    setBusy(button, true);
+    try {
+      await load(false);
+    } finally {
+      querying = false;
+      setBusy(button, false);
     }
   }
 
@@ -276,30 +323,41 @@
     if (changed === "end" && e < s) el("ov-start").value = e;
   }
 
-  el("btn-query").addEventListener("click", (e) => {
-    setBusy(e.currentTarget, true);
-    load(false).finally(() => setBusy(e.currentTarget, false));
-  });
-  el("btn-refresh").addEventListener("click", (e) => {
-    setBusy(e.currentTarget, true);
-    load(true).finally(() => setBusy(e.currentTarget, false));
+  el("btn-query").addEventListener("click", (e) => runQuery(e.currentTarget));
+  el("ov-range").addEventListener("change", async () => {
+    const key = el("ov-range").value;
+    applyRange(key);
+    if (key === "custom" || querying) return;
+    querying = true;
+    try {
+      await load(false);
+    } finally {
+      querying = false;
+    }
   });
   el("ov-search").addEventListener("input", renderAll);
-  el("ov-person").addEventListener("change", () => load(false));
-  // 日期变更只联动校正区间，不自动查询：必须开始/结束都选好、点「查询」才发请求。
-  el("ov-start").addEventListener("change", () => syncDateRange("start"));
-  el("ov-end").addEventListener("change", () => syncDateRange("end"));
+  el("ov-person").addEventListener("change", () => {
+    if (fillingPeople || querying) return;
+    runQuery(el("btn-query"));
+  });
+  // 手改日期切到自定义，不自动查询，点「查询」才发请求。
+  function onCustomDate(changed) {
+    if (el("ov-range").value !== "custom") {
+      el("ov-range").value = "custom";
+      showCustomDates(true);
+    }
+    syncDateRange(changed);
+  }
+  el("ov-start").addEventListener("change", () => onCustomDate("start"));
+  el("ov-end").addEventListener("change", () => onCustomDate("end"));
   el("btn-export").addEventListener("click", exportCsv);
 
   (async () => {
-    const now = new Date();
-    const cap = yesterdayISO();
-    el("ov-end").max = cap;
-    el("ov-start").max = cap;
-    let startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    if (localISODate(startDate) > cap) startDate = new Date(cap + "T00:00:00");
-    el("ov-start").value = localISODate(startDate);
-    el("ov-end").value = cap;
+    const today = todayISO();
+    el("ov-end").max = today;
+    el("ov-start").max = today;
+    el("ov-range").value = "today";
+    applyRange("today");
     await refreshTokenPill();
     try {
       const me = await api("/api/auth/me");

@@ -106,13 +106,30 @@
     return cost * roi * (1 - refund) * (pct / 100) - cost;
   }
 
+  function planProfitRate(item) {
+    const profit = planProfit(item);
+    const settle = Number(item && item.settle_amount);
+    if (profit == null || !Number.isFinite(settle) || settle === 0) return null;
+    return profit / settle;
+  }
+
+  function fmtProfitRate(rate) {
+    if (rate == null) return "-";
+    return `${(rate * 100).toFixed(2)}%`;
+  }
+
   function paintProfitCell(id) {
     const item = plansCache.find((row) => String(row.ad_id) === String(id));
     const node = document.querySelector(`[data-profit-for="${id}"]`);
+    const rateNode = document.querySelector(`[data-profit-rate-for="${id}"]`);
     if (!item || !node) return;
     const profit = planProfit(item);
     node.textContent = profit == null ? "-" : fmtMoney(profit);
     node.classList.toggle("num-neg", profit != null && profit < 0);
+    if (!rateNode) return;
+    const rate = planProfitRate(item);
+    rateNode.textContent = fmtProfitRate(rate);
+    rateNode.classList.toggle("num-neg", rate != null && rate < 0);
   }
 
   function moneyCell(value) {
@@ -128,13 +145,13 @@
     const profitText = profits.length
       ? `利润合计 ${fmtMoney(profits.reduce((sum, n) => sum + n, 0))}`
       : "利润合计 -";
-    el("plan-hint").textContent = `1小时内退款率已加 5%。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}`;
+    el("plan-hint").textContent = `1小时内退款率已加 5%。利润率 = 利润 / 净成交金额。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}`;
   }
 
   function renderPlans(list) {
     const tbody = el("plan-tbody");
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="11" class="empty">暂无计划</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" class="empty">暂无计划</td></tr>';
       return;
     }
     tbody.innerHTML = list
@@ -144,6 +161,7 @@
           ? `<img class="plan-thumb" src="${item.product_image}" alt="">`
           : "";
         const profit = planProfit(item);
+        const rate = planProfitRate(item);
         return `<tr data-ad-id="${item.ad_id}">
           <td class="col-switch">
             <label class="switch">
@@ -170,6 +188,7 @@
           ${moneyCell(item.settle_amount)}
           <td class="col-num">${fmtRoi(item.pay_roi)}</td>
           <td class="col-num">${fmtRate(item.refund_rate_1h)}</td>
+          <td class="col-num${rate != null && rate < 0 ? " num-neg" : ""}" data-profit-rate-for="${item.ad_id}">${fmtProfitRate(rate)}</td>
           <td class="col-profit">
             <div class="profit-with-rate">
               <span class="profit-num${profit != null && profit < 0 ? " num-neg" : ""}" data-profit-for="${item.ad_id}">${profit == null ? "-" : fmtMoney(profit)}</span>
@@ -215,7 +234,7 @@
       paintHint();
       await migrateLocalCommission();
     } catch (err) {
-      el("plan-tbody").innerHTML = `<tr><td colspan="11" class="empty">${err.message || "拉取失败"}</td></tr>`;
+      el("plan-tbody").innerHTML = `<tr><td colspan="12" class="empty">${err.message || "拉取失败"}</td></tr>`;
       el("plan-hint").textContent = err.message || "拉取失败";
       throw err;
     }

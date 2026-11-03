@@ -69,14 +69,13 @@ def display_name(product_id: int, name: str | None) -> str:
     return f"商品…{pid[-6:]}"
 
 
-def product_profit(
+def profit_basis(
     cost: float,
     pay_amount: float,
     pay_roi: float | None,
     settle_amount: float | None,
-    commission_pct: float,
-) -> float | None:
-    """商品口径利润：退款率用「1 − 净成交/支付GMV」推算，其余同计划页公式。"""
+) -> tuple[float, float] | None:
+    """利润里跟佣金无关的部分。返回 (消耗×ROI×留存, 参与计算的消耗)，算不了返回 None。"""
     if cost <= 0 and not pay_amount:
         return None
     roi = pay_roi
@@ -86,7 +85,74 @@ def product_profit(
         return None
     refund = max(0.0, min(1.0, 1.0 - float(settle_amount) / float(pay_amount)))
     keep = 1.0 - min(1.0, refund + REFUND_EXTRA)
-    return float(cost) * float(roi) * keep * (float(commission_pct) / 100.0) - float(cost)
+    return float(cost) * float(roi) * keep, float(cost)
+
+
+def product_profit(
+    cost: float,
+    pay_amount: float,
+    pay_roi: float | None,
+    settle_amount: float | None,
+    commission_pct: float,
+) -> float | None:
+    """商品口径利润：退款率用「1 − 净成交/支付GMV」推算，其余同计划页公式。"""
+    parts = profit_basis(cost, pay_amount, pay_roi, settle_amount)
+    if parts is None:
+        return None
+    basis, used_cost = parts
+    return basis * (float(commission_pct) / 100.0) - used_cost
+
+
+def resolve_commission_pct(commission_map: dict[int, float], product_id: int) -> float:
+    """库里该商品佣金为空或 0 时按 60%。"""
+    pct = float(commission_map.get(int(product_id), 0) or 0)
+    return pct if pct > 0 else DEFAULT_COMMISSION_PCT
+
+
+def rollup_today_rows(
+    rows: list[dict[str, Any]], commission_map: dict[int, float]
+) -> dict[int, dict[str, Any]]:
+    """今天的商品行合成一份，带上佣金和重算利润要用的底数。不打接口。"""
+    bucket: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        pid = int(row["product_id"])
+        agg = bucket.setdefault(
+            pid,
+            {
+                "name": display_name(pid, row.get("product_name")),
+                "cost": 0.0,
+                "sales": 0,
+                "basis": 0.0,
+                "profit_cost": 0.0,
+            },
+        )
+        if row.get("product_name"):
+            agg["name"] = display_name(pid, row.get("product_name"))
+        agg["cost"] += float(row.get("cost") or 0)
+        agg["sales"] += int(row.get("order_count") or 0)
+        parts = profit_basis(
+            float(row.get("cost") or 0),
+            float(row.get("pay_amount") or 0),
+            row.get("pay_roi"),
+            row.get("settle_amount"),
+        )
+        if parts is not None:
+            basis, used_cost = parts
+            agg["basis"] += basis
+            agg["profit_cost"] += used_cost
+    out: dict[int, dict[str, Any]] = {}
+    for pid, agg in bucket.items():
+        pct = resolve_commission_pct(commission_map, pid)
+        out[pid] = {
+            "name": agg["name"],
+            "cost": round(agg["cost"], 2),
+            "sales": int(agg["sales"]),
+            "basis": agg["basis"],
+            "profit_cost": agg["profit_cost"],
+            "commission": pct,
+            "profit": round(agg["basis"] * pct / 100.0 - agg["profit_cost"], 2),
+        }
+    return out
 
 
 async def fetch_products(
@@ -601,3 +667,40 @@ def aggregate_products(
         },
         "source": "api",
     }
+
+
+def profits_by_advertiser(db: Session, start: str, end: str) -> dict[int, float]:
+    """按店铺把区间内各商品利润加总。只读日表，不打接口。佣金空或 0 按 60%。"""
+    commission_map = product_commissions(db)
+    rows = db.execute(
+        select(
+            QianchuanProductDaily.advertiser_id,
+            QianchuanProductDaily.product_id,
+            func.sum(QianchuanProductDaily.cost),
+            func.sum(QianchuanProductDaily.pay_amount),
+            func.sum(QianchuanProductDaily.settle_amount),
+        )
+        .where(
+            QianchuanProductDaily.stat_date >= start,
+            QianchuanProductDaily.stat_date <= end,
+        )
+        .group_by(QianchuanProductDaily.advertiser_id, QianchuanProductDaily.product_id)
+    ).all()
+    bag: dict[int, float] = {}
+    for adv, pid, cost, pay, settle in rows:
+        cost_f = float(cost or 0)
+        pay_f = float(pay or 0)
+        settle_v = float(settle) if settle is not None else None
+        roi = pay_f / cost_f if cost_f > 0 and pay_f else None
+        value = product_profit(
+            cost_f,
+            pay_f,
+            roi,
+            settle_v,
+            resolve_commission_pct(commission_map, int(pid)),
+        )
+        if value is None:
+            continue
+        adv_id = int(adv)
+        bag[adv_id] = bag.get(adv_id, 0.0) + value
+    return {adv: round(val, 2) for adv, val in bag.items()}

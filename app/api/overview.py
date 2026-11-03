@@ -24,16 +24,16 @@ class ProductCommissionIn(BaseModel):
 @router.get("/overview/summary", summary="数据总览（消耗/利润/产品Top）")
 async def overview_summary(
     request: Request,
-    start_date: str | None = Query(None, description="开始 yyyy-MM-dd，默认本月 1 号"),
+    start_date: str | None = Query(None, description="开始 yyyy-MM-dd，默认今天"),
     end_date: str | None = Query(None, description="结束 yyyy-MM-dd，默认今天"),
     person: str | None = Query(None, description="运营姓名，仅 admin 可指定"),
     refresh: bool = Query(False, description="忽略缓存强制重拉"),
     db: Session = Depends(get_db),
 ):
     username = current_username(request)
-    today = date.today()
-    start = start_date or today.replace(day=1).isoformat()
-    end = end_date or today.isoformat()
+    today = date.today().isoformat()
+    start = start_date or today
+    end = end_date or today
     if is_admin(username):
         people = [person] if person else None
     else:
@@ -62,4 +62,5 @@ async def set_product_commission(
     )
     if not hit:
         raise AppError("商品还未入库，先加载一次总览数据", code=40401)
+    await overview_service.apply_today_commission(payload.product_id, payload.commission_pct)
     return ok({"product_id": payload.product_id, "commission_pct": payload.commission_pct})

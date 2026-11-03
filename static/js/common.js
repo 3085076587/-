@@ -44,15 +44,19 @@ window.AdHelper = (() => {
   function setBusy(button, busy) {
     if (!button) return;
     if (busy) {
-      if (!button.dataset.label) button.dataset.label = button.textContent;
+      const current = button.textContent || "";
+      if (!button.dataset.label && !current.startsWith("处理中")) {
+        button.dataset.label = current;
+      }
       button.disabled = true;
       button.textContent = "处理中…";
       return;
     }
     button.disabled = false;
-    if (button.dataset.label) {
-      button.textContent = button.dataset.label;
-      delete button.dataset.label;
+    const label = button.dataset.label;
+    delete button.dataset.label;
+    if (label && !label.startsWith("处理中")) {
+      button.textContent = label;
     }
   }
 
