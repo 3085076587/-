@@ -8,6 +8,7 @@ data_topic=SITE_PROMOTION_PRODUCT_PRODUCT：单账户一次请求返回全部商
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any
 
@@ -667,6 +668,51 @@ def aggregate_products(
         },
         "source": "api",
     }
+
+
+def profit_by_day(
+    db: Session,
+    advertiser_ids: list[int],
+    start: str,
+    end: str,
+    commission_map: dict[int, float] | None = None,
+) -> dict[str, float]:
+    """这些账户每一天的商品利润。按当天每一行单独计算再相加，不把多天揉成一个 ROI。"""
+    if not advertiser_ids:
+        return {}
+    commissions = product_commissions(db) if commission_map is None else commission_map
+    rows = db.execute(
+        select(
+            QianchuanProductDaily.stat_date,
+            QianchuanProductDaily.product_id,
+            QianchuanProductDaily.cost,
+            QianchuanProductDaily.pay_amount,
+            QianchuanProductDaily.pay_roi,
+            QianchuanProductDaily.settle_amount,
+        ).where(
+            QianchuanProductDaily.advertiser_id.in_(advertiser_ids),
+            QianchuanProductDaily.stat_date >= start,
+            QianchuanProductDaily.stat_date <= end,
+        )
+    ).all()
+    bag: dict[str, float] = defaultdict(float)
+    for stat_date, pid, cost, pay, roi, settle in rows:
+        cost_f = float(cost or 0)
+        pay_f = float(pay or 0)
+        settle_v = float(settle) if settle is not None else None
+        roi_v = float(roi) if roi is not None else None
+        value = product_profit(
+            cost_f,
+            pay_f,
+            roi_v,
+            settle_v,
+            resolve_commission_pct(commissions, int(pid)),
+        )
+        if value is None:
+            continue
+        key = stat_date.isoformat() if isinstance(stat_date, date) else str(stat_date)[:10]
+        bag[key] += value
+    return {day: round(total, 2) for day, total in bag.items()}
 
 
 def profits_by_advertiser(db: Session, start: str, end: str) -> dict[int, float]:

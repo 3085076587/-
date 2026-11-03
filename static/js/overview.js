@@ -116,13 +116,34 @@
     }
   }
 
-  function matchKw(name) {
-    const kw = (el("ov-search").value || "").trim();
-    return !kw || String(name).includes(kw);
+  function lineOption(points, valueKey, color) {
+    const list = points || [];
+    return {
+      tooltip: { trigger: "axis", valueFormatter: (v) => "¥" + money(v) },
+      grid: { left: 72, right: 24, top: 36, bottom: 48 },
+      xAxis: {
+        type: "category",
+        boundaryGap: false,
+        data: list.map((it) => String(it.date || "").slice(5)),
+        axisLabel: { interval: list.length > 14 ? "auto" : 0 },
+      },
+      yAxis: { type: "value" },
+      series: [
+        {
+          type: "line",
+          smooth: true,
+          showSymbol: list.length <= 14,
+          data: list.map((it) => Number(it[valueKey] || 0)),
+          itemStyle: { color },
+          lineStyle: { width: 2, color },
+          areaStyle: { color, opacity: 0.12 },
+        },
+      ],
+    };
   }
 
   function vBarOption(rows, valueKey, color, prefix) {
-    const list = rows.filter((it) => matchKw(it.name));
+    const list = rows;
     return {
       tooltip: { trigger: "axis", valueFormatter: (v) => prefix + money(v) },
       grid: { left: 72, right: 20, top: 42, bottom: 56 },
@@ -150,7 +171,7 @@
   }
 
   function hBarOption(rows, color, prefix, storeAs) {
-    const list = rows.filter((it) => matchKw(it.name)).slice(0, 20).reverse();
+    const list = rows.slice(0, 20).reverse();
     if (storeAs) chartRows[storeAs] = list;
     return {
       tooltip: {
@@ -185,14 +206,33 @@
   function renderAll() {
     if (!summary) return;
     const k = summary.kpis || {};
-    el("kpi-cost").textContent = "¥" + money(k.total_cost);
+    const board = summary.workbench || {};
+    el("kpi-cost").textContent = "¥" + money(board.stat_cost != null ? board.stat_cost : k.total_cost);
     el("kpi-profit").textContent = "¥" + money(k.total_profit);
+    el("kpi-profit-rate").textContent = board.profit_rate == null ? "-" : `${(Number(board.profit_rate) * 100).toFixed(2)}%`;
+    el("kpi-pay").textContent = "¥" + money(board.pay_amount);
+    el("kpi-pay-roi").textContent = board.pay_roi == null ? "-" : Number(board.pay_roi).toFixed(2);
+    el("kpi-orders").textContent = board.order_count == null ? "-" : Number(board.order_count).toLocaleString("zh-CN");
+    el("kpi-order-cost").textContent = board.order_cost == null ? "-" : "¥" + money(board.order_cost);
+    el("kpi-settle").textContent = "¥" + money(board.settle_amount);
+    el("kpi-settle-roi").textContent = board.settle_roi == null ? "-" : Number(board.settle_roi).toFixed(2);
     el("kpi-people").textContent = k.people_count ?? 0;
-    charts["chart-cost"].setOption(vBarOption(summary.people, "cost", COLORS.cost, "¥"), true);
-    charts["chart-profit"].setOption(
-      vBarOption(summary.people, "profit", COLORS.profit, "¥"),
-      true
-    );
+    const trend = summary.trend;
+    if (trend && trend.length > 1) {
+      const who = summary.trend_person || "";
+      el("chart-cost-title").textContent = who ? `${who}消耗趋势` : "消耗趋势";
+      el("chart-profit-title").textContent = who ? `${who}利润趋势` : "利润趋势";
+      charts["chart-cost"].setOption(lineOption(trend, "cost", COLORS.cost), true);
+      charts["chart-profit"].setOption(lineOption(trend, "profit", COLORS.profit), true);
+    } else {
+      el("chart-cost-title").textContent = "各运营消耗对比";
+      el("chart-profit-title").textContent = "各运营利润对比";
+      charts["chart-cost"].setOption(vBarOption(summary.people, "cost", COLORS.cost, "¥"), true);
+      charts["chart-profit"].setOption(
+        vBarOption(summary.people, "profit", COLORS.profit, "¥"),
+        true
+      );
+    }
     charts["chart-product-cost"].setOption(
       hBarOption(summary.product_cost_top, COLORS.productCost, "¥", "productCost"),
       true
@@ -301,6 +341,9 @@
     summary.people.forEach((p) =>
       lines.push(["运营", p.name, p.cost, p.profit, ""].map(csvCell).join(","))
     );
+    (summary.trend || []).forEach((p) =>
+      lines.push(["按天", p.date, p.cost, p.profit, ""].map(csvCell).join(","))
+    );
     summary.product_cost_top.forEach((p) =>
       lines.push(["产品消耗", p.name, p.value, "", ""].map(csvCell).join(","))
     );
@@ -335,7 +378,6 @@
       querying = false;
     }
   });
-  el("ov-search").addEventListener("input", renderAll);
   el("ov-person").addEventListener("change", () => {
     if (fillingPeople || querying) return;
     runQuery(el("btn-query"));

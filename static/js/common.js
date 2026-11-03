@@ -85,6 +85,37 @@ window.AdHelper = (() => {
     }
   }
 
+  function renderTopbarUser(username) {
+    const wrap = el("topbar-user-wrap");
+    const avatar = el("topbar-user-avatar");
+    const nameNode = el("topbar-user");
+    const name = String(username || "").trim();
+    if (!wrap || !avatar || !nameNode) return;
+    if (!name) {
+      wrap.classList.add("hidden");
+      nameNode.textContent = "";
+      avatar.textContent = "";
+      return;
+    }
+    wrap.classList.remove("hidden");
+    nameNode.textContent = name;
+    avatar.textContent = name.slice(0, 1);
+    avatar.setAttribute("title", name);
+    nameNode.setAttribute("title", name);
+  }
+
+  async function refreshTopbarUser() {
+    try {
+      const me = await api("/api/auth/me");
+      const name = me && me.username ? String(me.username) : "";
+      renderTopbarUser(name);
+      return me;
+    } catch (_) {
+      renderTopbarUser("");
+      return null;
+    }
+  }
+
   function advertiserOptions(list, selected) {
     const options = ['<option value="">请选择子账户</option>'].concat(
       (list || []).map((item) => {
@@ -109,6 +140,8 @@ window.AdHelper = (() => {
     setBusy,
     renderTokenPill,
     refreshTokenPill,
+    refreshTopbarUser,
+    renderTopbarUser,
     advertiserOptions,
     queryParam,
   };

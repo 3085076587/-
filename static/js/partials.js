@@ -6,10 +6,10 @@
   const active = mount.dataset.active || "";
   const items = [
     {
-      key: "auth",
-      href: "/",
-      label: "授权账号信息",
-      icon: '<path d="M4 19V5M4 19h16M8 17V9M12 17V7M16 17v-4"/>',
+      key: "overview",
+      href: "/overview",
+      label: "数据总览",
+      icon: '<path d="M3 3v18h18"/><path d="M7 13l3-3 3 2 4-5"/>',
     },
     {
       key: "advertisers",
@@ -24,10 +24,10 @@
       icon: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
     },
     {
-      key: "overview",
-      href: "/overview",
-      label: "数据总览",
-      icon: '<path d="M3 3v18h18"/><path d="M7 13l3-3 3 2 4-5"/>',
+      key: "auth",
+      href: "/",
+      label: "授权账号信息",
+      icon: '<path d="M4 19V5M4 19h16M8 17V9M12 17V7M16 17v-4"/>',
     },
   ];
 
@@ -60,6 +60,36 @@
       </button>
     </div>
   `;
+
+  const topbarRight = document.querySelector(".topbar-right");
+  if (topbarRight && !document.getElementById("topbar-user-wrap")) {
+    const wrap = document.createElement("div");
+    wrap.id = "topbar-user-wrap";
+    wrap.className = "topbar-user-wrap hidden";
+    wrap.setAttribute("aria-label", "当前登录账号");
+    wrap.innerHTML =
+      '<span class="topbar-user-avatar" id="topbar-user-avatar"></span>' +
+      '<span class="topbar-user-name" id="topbar-user"></span>';
+    topbarRight.insertBefore(wrap, topbarRight.firstChild);
+  }
+  async function loadTopbarUser() {
+    if (window.AdHelper && typeof window.AdHelper.refreshTopbarUser === "function") {
+      return window.AdHelper.refreshTopbarUser();
+    }
+    try {
+      const resp = await fetch("/api/auth/me");
+      const body = await resp.json();
+      if (body.code !== 0 || !body.data) return null;
+      const name = String(body.data.username || "");
+      if (window.AdHelper && typeof window.AdHelper.renderTopbarUser === "function") {
+        window.AdHelper.renderTopbarUser(name);
+      }
+      return body.data;
+    } catch (_) {
+      return null;
+    }
+  }
+  loadTopbarUser().catch(() => {});
 
   const logoutBtn = document.getElementById("btn-logout");
   if (logoutBtn) {

@@ -171,6 +171,8 @@ def merge_dashboards(parts: list[dict[str, Any]]) -> dict[str, Any]:
         if not part.get("from_cache"):
             from_cache = False
     accounts.sort(key=lambda item: float(item.get("stat_cost") or 0), reverse=True)
+    from app.services.advertiser_dashboard import weighted_pay_roi, weighted_settle_roi
+
     sum_cost = sum(float(item.get("stat_cost") or 0) for item in accounts)
     sum_pay = sum(float(item.get("pay_amount") or 0) for item in accounts)
     sum_settle = sum(float(item.get("settle_amount") or 0) for item in accounts)
@@ -180,9 +182,9 @@ def merge_dashboards(parts: list[dict[str, Any]]) -> dict[str, Any]:
         "overview": {
             "stat_cost": round(sum_cost, 2),
             "pay_amount": round(sum_pay, 2),
-            "pay_roi": round(sum_pay / sum_cost, 4) if sum_cost > 0 else None,
+            "pay_roi": weighted_pay_roi(accounts),
             "settle_amount": round(sum_settle, 2),
-            "settle_roi": round(sum_settle / sum_cost, 4) if sum_cost > 0 else None,
+            "settle_roi": weighted_settle_roi(accounts),
         },
         "accounts": accounts,
         "total": len(accounts),

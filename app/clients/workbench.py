@@ -22,6 +22,7 @@ _FIELDS = [
     "stat_cost_for_roi2",
     "total_prepay_and_pay_order_roi2",
     "total_pay_order_gmv_for_roi2",
+    "total_pay_order_count_for_roi2",
     "total_order_settle_amount_for_roi2_1h",
     "total_prepay_and_pay_settle_roi2_1h",
     "total_refund_order_gmv_for_roi2_1h_rate",

@@ -130,7 +130,7 @@ def _seconds_until(hh: int, mm: int) -> float:
 
 
 async def run_daily_sync() -> None:
-    """同步昨天的账户 + 商品数据入库（商品同步会顺带补当天活跃商品名）。"""
+    """同步昨天的账户 + 总览日汇总 + 商品数据入库（商品同步会顺带补当天活跃商品名）。"""
     db = SessionLocal()
     try:
         day = daily_sync.yesterday_str()

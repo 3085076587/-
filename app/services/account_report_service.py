@@ -66,6 +66,33 @@ def has_account_day(db: Session, day: str | date) -> bool:
     return int(count or 0) > 0
 
 
+def account_cost_by_day(
+    db: Session,
+    advertiser_ids: list[int],
+    start: str | date,
+    end: str | date,
+) -> dict[str, float]:
+    """这些账户在区间内每一天的消耗合计。没有行的日期不出现在结果里。"""
+    if not advertiser_ids:
+        return {}
+    rows = db.execute(
+        select(
+            QianchuanAccountDaily.stat_date,
+            func.sum(QianchuanAccountDaily.cost),
+        )
+        .where(
+            QianchuanAccountDaily.advertiser_id.in_(advertiser_ids),
+            QianchuanAccountDaily.stat_date >= _as_date(start),
+            QianchuanAccountDaily.stat_date <= _as_date(end),
+        )
+        .group_by(QianchuanAccountDaily.stat_date)
+    ).all()
+    return {
+        _day_key(stat_date): round(float(cost or 0), 2)
+        for stat_date, cost in rows
+    }
+
+
 def account_cost_by_advertiser(
     db: Session, start: str | date, end: str | date
 ) -> dict[int, float]:

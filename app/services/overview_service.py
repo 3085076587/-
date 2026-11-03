@@ -22,6 +22,7 @@ from app.core.redis_client import get_cache_redis
 from app.models.advertiser import QianchuanAdvertiser
 from app.services import (
     account_report_service,
+    overview_daily_service,
     product_report_service,
     token_store,
 )
@@ -258,8 +259,9 @@ def _empty_result(start: str, end: str, note: str) -> dict[str, Any]:
         "cached_at": None,
         "errors": [],
         "note": note,
-    }
-
+        "trend": None,
+        "trend_person": None,
+        "workbench": None,
 
 def _today_key(day: str) -> str:
     return f"{TODAY_CACHE_PREFIX}:{day}"
@@ -282,6 +284,39 @@ def _top_products(product_bag: dict[int, dict[str, Any]], key: str, commission_m
 
 def _finalize(
     start: str,
+def _person_trend(
+    db: Session,
+    person: str,
+    start: str,
+    end: str,
+    today_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """单人按天的消耗和利润。今天用实时快照，昨天及以前读日表。缺的日子补 0。"""
+    advertiser_ids = _person_advertisers(db).get(person) or []
+    today = date.today().isoformat()
+    include_today = start <= today <= end
+    history_end = (date.today() - timedelta(days=1)).isoformat() if include_today else end
+    costs: dict[str, float] = {}
+    profits: dict[str, float] = {}
+    if start <= history_end:
+        costs = account_report_service.account_cost_by_day(db, advertiser_ids, start, history_end)
+        profits = product_report_service.profit_by_day(db, advertiser_ids, start, history_end)
+    if include_today:
+        row = next((item for item in (today_rows or []) if item.get("name") == person), None)
+        costs[today] = round(float(row["cost"]), 2) if row else 0.0
+        profits[today] = round(float(row["profit"]), 2) if row else 0.0
+    return [
+        {
+            "date": day,
+            "cost": round(float(costs.get(day) or 0), 2),
+            "profit": round(float(profits.get(day) or 0), 2),
+        }
+        for day in _iter_days(start, end)
+    ]
+
+
+def _finalize(
+    start: str,
     end: str,
     people_rows: list[dict[str, Any]],
     product_bag: dict[int, dict[str, Any]],
@@ -291,8 +326,8 @@ def _finalize(
     from_cache: bool,
     cached_at: str,
     note: str,
-) -> dict[str, Any]:
-    people_rows = sorted(people_rows, key=lambda r: r["cost"], reverse=True)
+    trend: list[dict[str, Any]] | None = None,
+    trend_person: str | None = None,
     return {
         "start_date": start,
         "end_date": end,
@@ -308,8 +343,10 @@ def _finalize(
         "cached_at": cached_at or None,
         "errors": errors,
         "note": note,
-    }
-
+        "trend": None,
+        "trend_person": None,
+        "trend": trend,
+        "trend_person": trend_person,
 
 def _commission_of(stored: Any, pid: int, commission_map: dict[int, float]) -> float:
     """缓存里已写上的佣金优先；没有、或是 0，再查库，仍没有就 60%。"""
@@ -415,13 +452,15 @@ async def _compute_today(db: Session, today: str, prog_key: str | None) -> dict[
     db_people = _person_advertisers(db)
     adv_person = {adv_id: person for person, ids in db_people.items() for adv_id in ids}
     cost_by_person: dict[str, float] = defaultdict(float)
-    for item in accounts:
         name = adv_person.get(int(item.get("advertiser_id") or 0))
         if not name or name == "admin":
+        account_name = str(item.get("advertiser_name") or "")
+        if not _has_parentheses(account_name):
             continue
-        cost_by_person[name] += float(item.get("stat_cost") or 0)
-
-    commission_map = product_report_service.product_commissions(db)
+        who = person_name(account_name)
+        if not who:
+            continue
+        cost_by_person[who] += float(item.get("stat_cost") or 0)
     client = await token_store.build_client(db)
     gate = asyncio.Semaphore(max(1, int(settings.DASHBOARD_CONCURRENCY or 2)))
     targets = sorted(set(cost_by_person) | set(db_people))
@@ -585,7 +624,7 @@ async def _build_stored_range(
         name = adv_person.get(int(adv_id))
         if not name or name == "admin":
             continue
-        cost_by_person[name] += float(cost or 0)
+        if not name:
 
     commission_map = product_report_service.product_commissions(db)
     targets = sorted(set(cost_by_person) | set(db_people))
@@ -727,6 +766,13 @@ async def build_overview(
     await set_progress(prog_key, status="done", current=1, total=1, message="完成")
     return _finalize(
         start,
+    trend = None
+    trend_person = None
+    if people and len(people) == 1 and start < end:
+        trend_person = people[0]
+        trend = _person_trend(db, trend_person, start, end, today_rows if include_today else None)
+    result = _finalize(
+        start,
         end,
         _merge_people(history_rows, today_rows),
         product_bag,
@@ -735,4 +781,5 @@ async def build_overview(
         from_cache=from_cache,
         cached_at=cached_at,
         note=note,
-    )
+        trend=trend,
+        trend_person=trend_person,

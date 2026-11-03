@@ -137,6 +137,33 @@ async def load_roi2_accounts(start: str, end: str) -> list[dict[str, Any]]:
     return list(rows)
 
 
+def weighted_pay_roi(items: list[dict[str, Any]]) -> float | None:
+    """和原站 totalMetrics 一致：各账户 pay_roi 按消耗加权，不是支付金额÷消耗。"""
+    total_cost = 0.0
+    weighted = 0.0
+    for item in items:
+        cost = float(item.get("stat_cost") or 0)
+        roi = item.get("pay_roi")
+        if cost <= 0 or roi is None:
+            continue
+        total_cost += cost
+        weighted += cost * float(roi)
+    return round(weighted / total_cost, 4) if total_cost > 0 else None
+
+
+def weighted_settle_roi(items: list[dict[str, Any]]) -> float | None:
+    total_cost = 0.0
+    weighted = 0.0
+    for item in items:
+        cost = float(item.get("stat_cost") or 0)
+        roi = item.get("settle_roi")
+        if cost <= 0 or roi is None:
+            continue
+        total_cost += cost
+        weighted += cost * float(roi)
+    return round(weighted / total_cost, 4) if total_cost > 0 else None
+
+
 def _overview(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     sum_cost = sum(float(item.get("stat_cost") or 0) for item in accounts)
     sum_pay = sum(float(item.get("pay_amount") or 0) for item in accounts)
@@ -144,9 +171,9 @@ def _overview(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "stat_cost": round(sum_cost, 2),
         "pay_amount": round(sum_pay, 2),
-        "pay_roi": round(sum_pay / sum_cost, 4) if sum_cost > 0 else None,
+        "pay_roi": weighted_pay_roi(accounts),
         "settle_amount": round(sum_settle, 2),
-        "settle_roi": round(sum_settle / sum_cost, 4) if sum_cost > 0 else None,
+        "settle_roi": weighted_settle_roi(accounts),
     }
 
 

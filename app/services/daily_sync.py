@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
 from app.models.advertiser import QianchuanAdvertiser
-from app.services import account_report_service, product_report_service, token_store
+from app.services import account_report_service, overview_daily_service, product_report_service, token_store
+from app.services.advertiser_dashboard import load_roi2_accounts
 
 logger = get_task_logger()
 
@@ -32,7 +33,13 @@ def all_advertiser_ids(db: Session) -> list[int]:
 async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
     """入库指定某天的账户 + 全部账户商品数据。返回统计。"""
     settings = get_settings()
-    result: dict[str, Any] = {"day": day, "account_rows": 0, "product_ok": 0, "product_fail": 0}
+    result: dict[str, Any] = {
+        "day": day,
+        "account_rows": 0,
+        "overview_rows": 0,
+        "product_ok": 0,
+        "product_fail": 0,
+    }
 
     # 1) 账户维度：一次工作台请求写全部账户
     try:
@@ -40,6 +47,14 @@ async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         result["account_rows"] = -1
         logger.exception("每日同步-账户失败 %s：%s", day, exc)
+
+    # 1b) 总览日汇总：同一份工作台账户表，按子账户页口径写入全部和每个运营
+    try:
+        accounts = await load_roi2_accounts(day, day)
+        result["overview_rows"] = overview_daily_service.save_overview_day(db, day, accounts)
+    except Exception as exc:  # noqa: BLE001
+        result["overview_rows"] = -1
+        logger.exception("每日同步-总览汇总失败 %s：%s", day, exc)
 
     # 2) 商品维度：逐账户单日入库，并发受限流保护
     client = await token_store.build_client(db)
@@ -60,9 +75,10 @@ async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
     await asyncio.gather(*(one(a) for a in adv_ids))
     result.update(product_ok=ok, product_fail=fail, product_total=len(adv_ids))
     logger.info(
-        "每日同步完成 %s：账户 %s 行，商品 成功 %s / 失败 %s / 共 %s",
+        "每日同步完成 %s：账户 %s 行，总览汇总 %s 行，商品 成功 %s / 失败 %s / 共 %s",
         day,
         result["account_rows"],
+        result["overview_rows"],
         ok,
         fail,
         len(adv_ids),
