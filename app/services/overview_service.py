@@ -262,6 +262,8 @@ def _empty_result(start: str, end: str, note: str) -> dict[str, Any]:
         "trend": None,
         "trend_person": None,
         "workbench": None,
+    }
+
 
 def _today_key(day: str) -> str:
     return f"{TODAY_CACHE_PREFIX}:{day}"
@@ -282,8 +284,6 @@ def _top_products(product_bag: dict[int, dict[str, Any]], key: str, commission_m
     return rows[:TOP_N]
 
 
-def _finalize(
-    start: str,
 def _person_trend(
     db: Session,
     person: str,
@@ -328,6 +328,8 @@ def _finalize(
     note: str,
     trend: list[dict[str, Any]] | None = None,
     trend_person: str | None = None,
+) -> dict[str, Any]:
+    people_rows = sorted(people_rows, key=lambda r: r["cost"], reverse=True)
     return {
         "start_date": start,
         "end_date": end,
@@ -343,10 +345,10 @@ def _finalize(
         "cached_at": cached_at or None,
         "errors": errors,
         "note": note,
-        "trend": None,
-        "trend_person": None,
         "trend": trend,
         "trend_person": trend_person,
+    }
+
 
 def _commission_of(stored: Any, pid: int, commission_map: dict[int, float]) -> float:
     """缓存里已写上的佣金优先；没有、或是 0，再查库，仍没有就 60%。"""
@@ -450,10 +452,8 @@ async def _compute_today(db: Session, today: str, prog_key: str | None) -> dict[
         await set_progress(prog_key, status="running", current=0, total=1, message="正在读取今天的账户数据")
     accounts = await load_roi2_accounts(today, today)
     db_people = _person_advertisers(db)
-    adv_person = {adv_id: person for person, ids in db_people.items() for adv_id in ids}
     cost_by_person: dict[str, float] = defaultdict(float)
-        name = adv_person.get(int(item.get("advertiser_id") or 0))
-        if not name or name == "admin":
+    for item in accounts:
         account_name = str(item.get("advertiser_name") or "")
         if not _has_parentheses(account_name):
             continue
@@ -622,9 +622,9 @@ async def _build_stored_range(
     cost_by_person: dict[str, float] = defaultdict(float)
     for adv_id, cost in cost_by_advertiser.items():
         name = adv_person.get(int(adv_id))
-        if not name or name == "admin":
-            continue
         if not name:
+            continue
+        cost_by_person[name] += float(cost or 0)
 
     commission_map = product_report_service.product_commissions(db)
     targets = sorted(set(cost_by_person) | set(db_people))
@@ -764,8 +764,6 @@ async def build_overview(
         from_cache = bool(history["from_cache"]) if history else False
         cached_at = history["cached_at"] if history else ""
     await set_progress(prog_key, status="done", current=1, total=1, message="完成")
-    return _finalize(
-        start,
     trend = None
     trend_person = None
     if people and len(people) == 1 and start < end:
@@ -783,3 +781,16 @@ async def build_overview(
         note=note,
         trend=trend,
         trend_person=trend_person,
+    )
+    person = people[0] if people and len(people) == 1 else None
+    try:
+        metrics = await overview_daily_service.metrics_for_range(
+            db, result["start_date"], result["end_date"], person
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("总览工作台汇总失败：%s", exc)
+        result["workbench"] = None
+        return result
+    result["workbench"] = overview_daily_service.with_profit_rate(metrics, result["kpis"]["total_profit"])
+    result["kpis"]["total_cost"] = metrics["stat_cost"]
+    return result
