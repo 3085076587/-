@@ -15,6 +15,7 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine, ensure_columns
 from app.core.exceptions import register_exception_handlers
+from app.core.log_setup import get_task_logger
 from app.core.redis_client import close_redis
 from app.core.response import fail
 from app.services import session_auth
@@ -72,12 +73,13 @@ async def lifespan(_: FastAPI):
         logger.warning("补写商品同步标记失败：%s", exc)
 
     stop_event = asyncio.Event()
+    task_logger = get_task_logger()
     refresh_task = asyncio.create_task(token_refresh_loop(stop_event))
-    logger.info("已启动 token 自动刷新定时任务")
+    task_logger.info("已启动 token 自动刷新定时任务")
     daily_task = asyncio.create_task(daily_sync_loop(stop_event))
-    logger.info("已启动每日 00:01 数据入库定时任务")
+    task_logger.info("已启动每日 00:01 数据入库定时任务")
     today_task = asyncio.create_task(overview_today_loop(stop_event))
-    logger.info("已启动今天数据总览 15 分钟刷新")
+    task_logger.info("已启动今天数据总览 15 分钟刷新")
     try:
         yield
     finally:

@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
 
+from app.core.log_setup import get_task_logger
 from app.core.redis_client import get_cache_redis
 from app.services import advertiser_dashboard
 
@@ -400,13 +401,14 @@ async def fetch_people(
 
 async def warmup_all_presets(db: Session) -> None:
     """按人名预热今天/7天/30天。某个人已经在拉时，预热等那一次，不重复请求。"""
+    task_logger = get_task_logger()
     if _warmup_lock.locked():
-        logger.info("仪表盘预热已在进行，跳过本轮")
+        task_logger.info("仪表盘预热已在进行，跳过本轮")
         return
     async with _warmup_lock:
         for key in PRESET_RANGES:
             try:
                 await fetch_people(db, key, [], force=True, scope_all=True)
-                logger.info("仪表盘缓存已预热 range=%s", key)
+                task_logger.info("仪表盘缓存已预热 range=%s", key)
             except Exception as exc:
-                logger.error("仪表盘预热失败 range=%s: %s", key, exc)
+                task_logger.error("仪表盘预热失败 range=%s: %s", key, exc)

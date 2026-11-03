@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import date, timedelta
 from typing import Any
 
@@ -15,10 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.log_setup import get_task_logger
 from app.models.advertiser import QianchuanAdvertiser
 from app.services import account_report_service, product_report_service, token_store
 
-logger = logging.getLogger("uvicorn.error")
+logger = get_task_logger()
 
 
 def yesterday_str() -> str:

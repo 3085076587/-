@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime, timedelta
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.core.log_setup import get_task_logger
 from app.services import daily_sync, dashboard_cache, overview_service, token_store, workbench_session
 
-logger = logging.getLogger("uvicorn.error")
+logger = get_task_logger()
 
 REFRESH_AHEAD = timedelta(hours=2)
 DAILY_SYNC_HOUR = 0

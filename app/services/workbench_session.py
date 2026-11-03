@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -11,9 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.clients.workbench import fetch_product_accounts, parse_cookie
 from app.core.exceptions import AppError
+from app.core.log_setup import get_task_logger
 from app.models.workbench_session import WorkbenchSession
 
-logger = logging.getLogger("uvicorn.error")
+task_logger = get_task_logger()
 
 KEEP_HOURS = 12
 # 工作台登录只有一份。同时刷新时排队用这一把锁，避免两个人各写一次把凭证盖掉。
@@ -85,7 +85,7 @@ async def keepalive(db: Session) -> None:
         db.expire_all()
         row = get_session(db)
         if row is None or not (row.cookie or "").strip():
-            logger.info("工作台保活：还没有登录凭证，跳过")
+            task_logger.info("工作台保活：还没有登录凭证，跳过")
             return
         today = datetime.now().strftime("%Y-%m-%d")
         try:
@@ -99,8 +99,8 @@ async def keepalive(db: Session) -> None:
                 max_pages=1,
             )
         except Exception as exc:
-            logger.exception("工作台保活失败：%s", exc)
+            task_logger.exception("工作台保活失败：%s", exc)
             mark_fail(db, row, str(exc))
             return
         mark_ok(db, row, cookie, csrf)
-        logger.info("工作台登录保活成功，有效期顺延到 %s", row.expires_at)
+        task_logger.info("工作台登录保活成功，有效期顺延到 %s", row.expires_at)
