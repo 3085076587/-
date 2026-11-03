@@ -149,3 +149,11 @@ def _as_date(value: str | date) -> date:
     if isinstance(value, datetime):
         return value.date()
     return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+
+def _day_key(value: date | datetime | str) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)[:10]
