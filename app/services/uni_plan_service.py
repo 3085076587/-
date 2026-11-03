@@ -227,6 +227,77 @@ def save_plan_commission(
     return {"advertiser_id": advertiser_id, "ad_id": ad_id, "commission_pct": pct}
 
 
+def _already_deleted(plan: Any) -> bool:
+    label = str(getattr(plan, "status_label", "") or "")
+    blob = " ".join(
+        [
+            str(getattr(plan, "status", "") or ""),
+            str(getattr(plan, "opt_status", "") or ""),
+            label,
+        ]
+    ).upper()
+    return "DELETE" in blob or "已删除" in label
+
+
+def _status_failures(data: Any) -> list[str]:
+    if not isinstance(data, dict):
+        return []
+    messages: list[str] = []
+    rows = data.get("errors") or data.get("error_list") or data.get("fail_list") or []
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict):
+                msg = row.get("error_message") or row.get("message") or row.get("error_msg")
+                ad_id = row.get("ad_id")
+                if msg:
+                    messages.append(f"计划 {ad_id}：{msg}" if ad_id else str(msg))
+            elif row:
+                messages.append(str(row))
+    err = data.get("error")
+    if isinstance(err, str) and err.strip():
+        messages.append(err.strip())
+    return messages
+
+
+async def delete_plans(db: Session, payload: Any) -> dict[str, Any]:
+    """删除推商品计划。已删除的不再请求；有消耗的仍提交，平台拒绝时把原因返回。"""
+    plans = list(payload.plans or [])
+    if len(plans) > 10:
+        raise AppError("一次最多删除 10 个计划")
+    deleted_names = [str(plan.ad_id) for plan in plans if _already_deleted(plan)]
+    if deleted_names:
+        raise AppError("这些计划已经删除：" + "、".join(deleted_names))
+    ad_ids: list[int] = []
+    spent: list[str] = []
+    for plan in plans:
+        try:
+            ad_id = int(str(plan.ad_id).strip())
+        except (TypeError, ValueError):
+            continue
+        if ad_id and ad_id not in ad_ids:
+            ad_ids.append(ad_id)
+        cost = plan.stat_cost
+        if cost is not None and float(cost) > 0:
+            spent.append(str(ad_id))
+    if not ad_ids:
+        raise AppError("请选择要删除的计划")
+    client = await token_store.build_client(db)
+    try:
+        data = await client.update_uni_promotion_status(int(payload.advertiser_id), ad_ids, "DELETE")
+    except OceanEngineApiError as exc:
+        raise AppError(exc.msg, data=exc.data) from exc
+    failures = _status_failures(data)
+    if failures:
+        raise AppError("；".join(failures), data=data if isinstance(data, dict) else None)
+    return {
+        "advertiser_id": int(payload.advertiser_id),
+        "ad_ids": ad_ids,
+        "opt_status": "DELETE",
+        "spent_ids": spent,
+        "oceanengine": data if isinstance(data, dict) else {"raw": data},
+    }
+
+
 async def update_plan_status(db: Session, payload: UpdateStatusIn) -> dict[str, Any]:
     if payload.opt_status not in {"ENABLE", "DISABLE"}:
         raise AppError("opt_status 只允许 ENABLE / DISABLE")

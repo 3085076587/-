@@ -197,10 +197,14 @@
           </td>
           <td class="col-count"><span class="countdown" data-remind-ad="${item.ad_id}">-</span></td>
           <td class="col-op">
-            <button class="btn btn-accent"
-              data-edit-roi="${item.ad_id}"
-              data-roi="${item.roi2_goal ?? ""}"
-              data-name="${(item.ad_name || "").replace(/"/g, "&quot;")}">设 ROI</button>
+            <div class="plan-ops">
+              <input type="checkbox" data-pick-ad="${item.ad_id}" aria-label="选择计划">
+              <button class="btn btn-accent"
+                data-edit-roi="${item.ad_id}"
+                data-roi="${item.roi2_goal ?? ""}"
+                data-name="${(item.ad_name || "").replace(/"/g, "&quot;")}">设 ROI</button>
+              <button class="btn" type="button" data-delete-ad="${item.ad_id}">删除</button>
+            </div>
           </td>
         </tr>`;
       })
@@ -357,6 +361,45 @@
     }
   });
 
+  function selectedPlans() {
+    return Array.from(document.querySelectorAll("[data-pick-ad]:checked"))
+      .map((node) => plansCache.find((row) => String(row.ad_id) === node.getAttribute("data-pick-ad")))
+      .filter(Boolean);
+  }
+
+  async function deletePlans(items) {
+    if (!items.length) {
+      toast("请选择要删除的计划", "warn");
+      return;
+    }
+    if (items.length > 10) {
+      toast("一次最多删除 10 个计划", "warn");
+      return;
+    }
+    const spent = items.filter((item) => Number(item.stat_cost) > 0);
+    const names = items.map((item) => item.ad_name || item.ad_id).join("、");
+    let message = `确定删除这 ${items.length} 个计划？${names}`;
+    if (spent.length) {
+      message += "。其中有已经产生消耗的计划，平台可能拒绝删除，拒绝原因会直接显示。";
+    }
+    if (!window.confirm(message)) return;
+    await api("/api/plan/uni/delete", {
+      method: "POST",
+      body: JSON.stringify({
+        advertiser_id: Number(el("plan-advertiser").value),
+        plans: items.map((item) => ({
+          ad_id: String(item.ad_id),
+          status: item.status || "",
+          opt_status: item.opt_status || "",
+          status_label: item.status_label || "",
+          stat_cost: item.stat_cost,
+        })),
+      }),
+    });
+    toast("计划已删除");
+    await loadPlans();
+  }
+
   document.body.addEventListener("click", (event) => {
     const roiBtn = event.target.closest("[data-edit-roi]");
     if (roiBtn) {
@@ -366,6 +409,16 @@
         roiBtn.getAttribute("data-name")
       );
     }
+    const deleteBtn = event.target.closest("[data-delete-ad]");
+    if (deleteBtn) {
+      const item = plansCache.find((row) => String(row.ad_id) === deleteBtn.getAttribute("data-delete-ad"));
+      if (!item) return;
+      deletePlans([item]).catch((err) => toast(err.message, "error"));
+    }
+  });
+
+  el("btn-delete-plans").addEventListener("click", () => {
+    deletePlans(selectedPlans()).catch((err) => toast(err.message, "error"));
   });
 
   function remindSeconds() {
@@ -415,6 +468,268 @@
       closeRoiModal();
       await loadPlans();
       if (window.AdReminders) window.AdReminders.refresh();
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  function esc(text) {
+    return String(text || "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[ch]));
+  }
+
+  const pickedProducts = new Set();
+  let productPage = 1;
+  let productTotalPage = 1;
+  let uploadedVideo = null;
+
+  function createAdvertiserId() {
+    const advertiserId = el("plan-advertiser").value;
+    if (!advertiserId) {
+      toast("请先选择子账户", "warn");
+      return "";
+    }
+    return advertiserId;
+  }
+
+  function hasAweme() {
+    return Boolean(el("create-aweme").value);
+  }
+
+  function paintCreateMode() {
+    const custom = el("create-bid").value === "SMART_BID_CUSTOM";
+    el("create-roi-wrap").classList.toggle("hidden", !custom);
+    el("create-dates").classList.toggle("hidden", el("create-schedule").value !== "SCHEDULE_START_END");
+  }
+
+  async function postForm(path, form) {
+    const resp = await fetch(path, { method: "POST", body: form });
+    let body;
+    try {
+      body = await resp.json();
+    } catch (_) {
+      throw new Error(`接口返回非 JSON（HTTP ${resp.status}）`);
+    }
+    if (body.code === 40100) {
+      location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+      throw new Error(body.msg || "未登录");
+    }
+    if (body.code !== 0) throw new Error(body.msg || "请求失败");
+    return body.data;
+  }
+
+  async function uploadMaterial(input) {
+    const file = input.files && input.files[0];
+    if (!file) return null;
+    const advertiserId = createAdvertiserId();
+    if (!advertiserId) {
+      input.value = "";
+      return null;
+    }
+    const form = new FormData();
+    form.append("advertiser_id", advertiserId);
+    form.append("file", file);
+    const data = await postForm("/api/plan/uni/upload-video", form);
+    uploadedVideo = data;
+    el("create-video-name").textContent = `已上传 ${file.name}（${data.image_mode === "VIDEO_VERTICAL" ? "竖版" : "横版"}）`;
+    return data;
+  }
+
+  function renderProducts(list) {
+    const box = el("create-products");
+    if (!list.length) {
+      box.innerHTML = '<div class="pick-row muted">没有可显示的商品</div>';
+      return;
+    }
+    box.innerHTML = list.map((item) => {
+      const checked = pickedProducts.has(String(item.product_id)) ? "checked" : "";
+      const disabled = item.selectable ? "" : "disabled";
+      const reason = item.reason ? `<div class="cell-sub">${esc(item.reason)}</div>` : "";
+      return `<label class="pick-row ${disabled}">
+        <input type="checkbox" data-product-id="${item.product_id}" ${checked} ${disabled}>
+        <span>
+          <div>${esc(item.name || "未命名商品")}</div>
+          <div class="cell-sub mono">ID: ${item.product_id}</div>
+          ${reason}
+        </span>
+      </label>`;
+    }).join("");
+  }
+
+  async function loadAwemes() {
+    const advertiserId = createAdvertiserId();
+    const select = el("create-aweme");
+    select.innerHTML = '<option value="">无号商家</option>';
+    if (!advertiserId) return;
+    const rows = await api(`/api/plan/uni/awemes?advertiser_id=${advertiserId}`);
+    select.innerHTML += (rows || []).map((item) => {
+      const label = `${esc(item.aweme_name || "未命名")}（${esc(item.aweme_show_id || item.aweme_id)}）`;
+      const reason = item.reason ? ` ${esc(item.reason)}` : "";
+      return `<option value="${item.aweme_id}" ${item.disabled ? "disabled" : ""}>${label}${item.disabled ? " 不可用" : ""}${reason}</option>`;
+    }).join("");
+    const usable = (rows || []).find((item) => !item.disabled);
+    if (usable) select.value = String(usable.aweme_id);
+  }
+
+  async function loadCreateProducts(page) {
+    const advertiserId = createAdvertiserId();
+    if (!advertiserId) return;
+    productPage = page;
+    const qs = new URLSearchParams({
+      advertiser_id: advertiserId,
+      keyword: el("create-keyword").value.trim(),
+      page: String(page),
+    });
+    const awemeId = el("create-aweme").value;
+    if (awemeId) qs.set("aweme_id", awemeId);
+    let data;
+    try {
+      data = await api(`/api/plan/uni/products?${qs.toString()}`);
+    } catch (err) {
+      el("create-products").innerHTML = `<div class="pick-row muted">${esc(err.message)}</div>`;
+      el("create-page-label").textContent = awemeId ? "商品加载失败" : "请先选择抖音号";
+      throw err;
+    }
+    productTotalPage = data.total_page || 1;
+    el("create-page-label").textContent = `第 ${data.page || page} / ${productTotalPage} 页，已选 ${pickedProducts.size} 个`;
+    renderProducts(data.products || []);
+  }
+
+  function resetCreateUploads() {
+    uploadedVideo = null;
+    el("create-video").value = "";
+    el("create-video-name").textContent = "未上传";
+    const commission = el("create-commission");
+    if (commission) commission.value = "";
+  }
+
+  async function openCreate() {
+    if (!createAdvertiserId()) return;
+    pickedProducts.clear();
+    resetCreateUploads();
+    el("create-modal").classList.remove("hidden");
+    paintCreateMode();
+    try {
+      await loadAwemes();
+      paintCreateMode();
+      await loadCreateProducts(1);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  el("btn-create-plan").addEventListener("click", () => {
+    openCreate().catch((err) => toast(err.message, "error"));
+  });
+  el("btn-create-cancel").addEventListener("click", () => {
+    el("create-modal").classList.add("hidden");
+  });
+  el("create-bid").addEventListener("change", paintCreateMode);
+  el("create-schedule").addEventListener("change", paintCreateMode);
+  el("create-aweme").addEventListener("change", () => {
+    pickedProducts.clear();
+    paintCreateMode();
+    loadCreateProducts(1).catch((err) => toast(err.message, "error"));
+  });
+  el("btn-search-products").addEventListener("click", () => {
+    loadCreateProducts(1).catch((err) => toast(err.message, "error"));
+  });
+  el("btn-product-prev").addEventListener("click", () => {
+    if (productPage <= 1) return;
+    loadCreateProducts(productPage - 1).catch((err) => toast(err.message, "error"));
+  });
+  el("btn-product-next").addEventListener("click", () => {
+    if (productPage >= productTotalPage) return;
+    loadCreateProducts(productPage + 1).catch((err) => toast(err.message, "error"));
+  });
+  el("create-products").addEventListener("change", (event) => {
+    const box = event.target.closest("[data-product-id]");
+    if (!box) return;
+    const id = box.getAttribute("data-product-id");
+    if (box.checked) {
+      if (pickedProducts.size >= 30) {
+        box.checked = false;
+        toast("最多选择 30 个商品", "warn");
+        return;
+      }
+      pickedProducts.add(id);
+    } else {
+      pickedProducts.delete(id);
+    }
+    el("create-page-label").textContent = `第 ${productPage} / ${productTotalPage} 页，已选 ${pickedProducts.size} 个`;
+  });
+
+  async function onMaterialChange(input) {
+    try {
+      await uploadMaterial(input);
+    } catch (err) {
+      input.value = "";
+      toast(err.message, "error");
+    }
+  }
+  el("create-video").addEventListener("change", (event) => onMaterialChange(event.target));
+
+  el("btn-create-save").addEventListener("click", async (event) => {
+    const btn = event.currentTarget;
+    const advertiserId = createAdvertiserId();
+    if (!advertiserId) return;
+    if (!pickedProducts.size) {
+      toast("请选择商品", "warn");
+      return;
+    }
+    const awemeId = el("create-aweme").value;
+    const body = {
+      advertiser_id: Number(advertiserId),
+      name: el("create-name").value.trim(),
+      aweme_id: awemeId ? Number(awemeId) : null,
+      smart_bid_type: el("create-bid").value,
+      roi2_goal: el("create-bid").value === "SMART_BID_CUSTOM" ? Number(el("create-roi").value) : null,
+      budget: Number(el("create-budget").value),
+      video_schedule_type: el("create-schedule").value,
+      start_time: el("create-start").value || null,
+      end_time: el("create-end").value || null,
+      qcpx_mode: el("create-qcpx").value,
+      deep_external_action: el("create-goal").value,
+      product_ids: Array.from(pickedProducts),
+      title: el("create-title").value.trim(),
+      video_id: uploadedVideo ? uploadedVideo.video_id : null,
+      video_image_mode: uploadedVideo ? uploadedVideo.image_mode : null,
+    };
+    if (!body.name || !body.budget) {
+      toast("请填写计划名称和日预算", "warn");
+      return;
+    }
+    if (!body.video_id) {
+      toast("请先上传视频", "warn");
+      return;
+    }
+    setBusy(btn, true);
+    try {
+      const data = await api("/api/plan/uni/create", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const pct = parsedCommission(el("create-commission").value);
+      if (pct != null) {
+        await api("/api/plan/commission", {
+          method: "POST",
+          body: JSON.stringify({
+            advertiser_id: Number(advertiserId),
+            ad_id: data.ad_id,
+            commission_pct: pct,
+          }),
+        });
+      }
+      toast(`计划已创建，ID ${data.ad_id}`);
+      el("create-modal").classList.add("hidden");
+      await loadPlans();
     } catch (err) {
       toast(err.message, "error");
     } finally {

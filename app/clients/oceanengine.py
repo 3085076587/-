@@ -497,7 +497,10 @@ class OceanEngineClient:
         ad_ids: list[int],
         opt_status: str,
     ) -> dict[str, Any]:
-        """POST /v1.0/qianchuan/uni_promotion/ad/status/update/ 启停全域计划。"""
+        """POST /v1.0/qianchuan/uni_promotion/ad/status/update/ 启停或删除全域计划。
+
+        opt_status 允许 ENABLE、DISABLE、DELETE。DELETE 只适用于推商品计划，一次最多 10 个。
+        """
         body = await self._request(
             "POST",
             "/v1.0/qianchuan/uni_promotion/ad/status/update/",
@@ -693,4 +696,109 @@ class OceanEngineClient:
                 "page_size": page_size,
             },
         )
+        return body.get("data") or {}
+
+    async def list_uni_awemes(self, advertiser_id: int) -> dict[str, Any]:
+        """GET /v1.0/qianchuan/uni_aweme/authorized/get/ 商品全域可投抖音号。"""
+        body = await self._request(
+            "GET",
+            "/v1.0/qianchuan/uni_aweme/authorized/get/",
+            params={
+                "advertiser_id": advertiser_id,
+                "filtering": {
+                    "marketing_goal": "VIDEO_PROM_GOODS",
+                    "scene": "CREATE",
+                },
+                "page": 1,
+                "page_size": 100,
+            },
+        )
+        return body.get("data") or {}
+
+    async def list_uni_products(
+        self,
+        advertiser_id: int,
+        *,
+        aweme_id: int | None = None,
+        keyword: str = "",
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """GET /v1.0/qianchuan/uni_promotion/product/get/ 商家可投商品。
+
+        达人接口 product/aweme/get 必须带抖音号，无号商家用不了。
+        """
+        filtering: dict[str, Any] = {"tab": "ALL"}
+        if keyword.strip():
+            filtering["product_name"] = keyword.strip()
+        params: dict[str, Any] = {
+            "advertiser_id": advertiser_id,
+            "filtering": filtering,
+            "page": page,
+            "page_size": 30,
+            "order_field": "SELL_NUM",
+            "order_type": "DESC",
+        }
+        if aweme_id:
+            params["aweme_id"] = aweme_id
+        body = await self._request(
+            "GET",
+            "/v1.0/qianchuan/uni_promotion/product/get/",
+            params=params,
+        )
+        return body.get("data") or {}
+
+    async def create_uni_aweme_ad(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /v1.0/qianchuan/uni_aweme/ad/create/ 新建商品全域计划。"""
+        body = await self._request(
+            "POST",
+            "/v1.0/qianchuan/uni_aweme/ad/create/",
+            json_body=payload,
+        )
+        return body.get("data") or {}
+
+    async def upload_ad_file(
+        self,
+        *,
+        url: str,
+        form: dict[str, Any],
+        file_field: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """素材上传走 ad.oceanengine.com，日志里不打文件内容。"""
+        headers = {"Access-Token": self.access_token}
+        logger.info(
+            "巨量素材上传 %s field=%s filename=%s bytes=%s form=%s",
+            url,
+            file_field,
+            filename,
+            len(content),
+            self._dump(form),
+        )
+        response = await self._http().post(
+            url,
+            headers=headers,
+            data={key: str(value) for key, value in form.items()},
+            files={file_field: (filename, content, content_type or "application/octet-stream")},
+            timeout=httpx.Timeout(180.0),
+        )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise OceanEngineApiError(
+                f"素材上传未返回 JSON，HTTP {response.status_code}",
+                data={"text": response.text[:800]},
+            ) from exc
+        logger.info("巨量素材上传响应 %s", self._dump(body))
+        if not isinstance(body, dict):
+            raise OceanEngineApiError("素材上传响应格式异常", data={"body": body})
+        code = body.get("code")
+        if code not in (0, "0"):
+            ocean_code = int(code) if str(code).isdigit() else None
+            raise OceanEngineApiError(
+                str(body.get("message") or f"素材上传失败 code={code}"),
+                ocean_code=ocean_code,
+                data=body,
+            )
         return body.get("data") or {}

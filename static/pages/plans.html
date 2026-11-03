@@ -6,7 +6,7 @@
   <title>计划与 ROI · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261031f">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261103m">
 </head>
 <body>
 <div class="layout">
@@ -34,6 +34,8 @@
             </select>
           </div>
           <button class="btn btn-primary" id="btn-load-plans">拉取计划</button>
+          <button class="btn btn-accent" id="btn-create-plan" type="button">新建计划</button>
+          <button class="btn" id="btn-delete-plans" type="button">批量删除</button>
         </div>
         <p class="hint" id="plan-hint">1小时内退款率已加 5%。利润 = (消耗 × 整体支付ROI × (1 − 退货率)) × 佣金 − 消耗。利润率 = 利润 / 净成交金额。佣金会保存，下次打开不用再填。</p>
         <div class="table-wrap plans-table-wrap">
@@ -121,11 +123,109 @@
   </div>
 </div>
 
+<div class="modal-mask hidden" id="create-modal">
+  <div class="modal modal-create">
+    <h3>新建商品全域计划</h3>
+    <p class="hint">只上传视频。封面和商品图不用传，创建时开启智能优选，由系统自动选。控成本要填 ROI，放量不能填。</p>
+    <div class="create-grid">
+      <div class="field">
+        <label>抖音号</label>
+        <select id="create-aweme">
+          <option value="">无号商家</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>计划名称</label>
+        <input id="create-name" type="text" maxlength="100" placeholder="1 到 100 个字符，汉字算 2 个">
+      </div>
+      <div class="field">
+        <label>投放方式</label>
+        <select id="create-bid">
+          <option value="SMART_BID_CUSTOM">控成本投放</option>
+          <option value="SMART_BID_CONSERVATIVE">放量投放</option>
+        </select>
+      </div>
+      <div class="field" id="create-roi-wrap">
+        <label>支付 ROI 目标</label>
+        <input id="create-roi" type="number" min="0.01" step="0.01" placeholder="例如 2.50">
+      </div>
+      <div class="field">
+        <label>日预算（元）</label>
+        <input id="create-budget" type="number" min="0.01" step="0.01" placeholder="例如 300">
+      </div>
+      <div class="field">
+        <label>优化目标</label>
+        <select id="create-goal">
+          <option value="AD_CONVERT_TYPE_LIVE_PURE_PAY_ROI" selected>净成交 ROI</option>
+          <option value="AD_CONVERT_TYPE_LIVE_PAY_ROI">成交 ROI</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>投放时间</label>
+        <select id="create-schedule">
+          <option value="SCHEDULE_FROM_NOW">从今天起长期投放</option>
+          <option value="SCHEDULE_START_END">设置开始和结束日期</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>智能优惠券</label>
+        <select id="create-qcpx">
+          <option value="QCPX_MODE_OFF">关闭</option>
+          <option value="QCPX_MODE_ON">开启</option>
+        </select>
+      </div>
+    </div>
+    <div class="create-dates hidden" id="create-dates">
+      <div class="field">
+        <label>开始日期</label>
+        <input id="create-start" type="date">
+      </div>
+      <div class="field">
+        <label>结束日期</label>
+        <input id="create-end" type="date">
+      </div>
+    </div>
+    <div class="field" style="margin-top:12px;">
+      <label>商品（最多 30 个）</label>
+      <div class="create-search">
+        <input id="create-keyword" type="text" placeholder="商品名称">
+        <button class="btn" id="btn-search-products" type="button">查询商品</button>
+      </div>
+      <div class="product-pick" id="create-products"></div>
+      <div class="create-page">
+        <button class="btn" id="btn-product-prev" type="button">上一页</button>
+        <span class="muted" id="create-page-label">第 1 页</span>
+        <button class="btn" id="btn-product-next" type="button">下一页</button>
+      </div>
+    </div>
+    <div class="create-grid" style="margin-top:12px;">
+      <div class="field" id="create-video-wrap">
+        <label>视频</label>
+        <input id="create-video" type="file" accept="video/mp4,video/mpeg,video/3gpp,video/avi">
+        <p class="hint">横版视频：宽高比16:9，视频码率≥516kbps，大小≤1000M，1280*720≤分辨率≤2560*1440，4s≤时长≤300s<br>竖版视频：宽高比9:16，视频码率≥516kbps，720*1280≤分辨率≤1440*2560，4s≤时长≤300s</p>
+        <div class="cell-sub" id="create-video-name">未上传</div>
+      </div>
+      <div class="field">
+        <label>标题</label>
+        <input id="create-title" type="text" maxlength="110" placeholder="10 到 110 个字符，汉字算 2 个">
+      </div>
+      <div class="field">
+        <label>佣金%</label>
+        <input id="create-commission" type="number" min="0" max="100" step="0.1" placeholder="只记在本地，不传给千川">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="btn-create-cancel" type="button">取消</button>
+      <button class="btn btn-accent" id="btn-create-save" type="button">创建计划</button>
+    </div>
+  </div>
+</div>
+
 <div id="reminder-stack" class="reminder-stack" aria-live="polite"></div>
 
 <script src="/static/js/common.js"></script>
 <script src="/static/js/partials.js"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/plans.js?v=20261103e"></script>
+<script src="/static/js/plans.js?v=20261103l"></script>
 </body>
 </html>

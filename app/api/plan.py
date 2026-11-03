@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.response import ok
-from app.schemas.plan import SaveCommissionIn, UpdateRoiIn, UpdateStatusIn
-from app.services import plan_service, uni_plan_service
+from app.schemas.plan import CreateUniPlanIn, DeletePlansIn, SaveCommissionIn, UpdateRoiIn, UpdateStatusIn
+from app.services import plan_service, uni_create_service, uni_plan_service
 from app.services.account_access import assert_advertiser_access, current_username
 
 router = APIRouter(tags=["Plan"])
@@ -61,10 +61,86 @@ async def save_commission(payload: SaveCommissionIn, request: Request, db: Sessi
     return ok(data)
 
 
+@router.post("/plan/uni/delete", summary="删除推商品全域计划")
+async def delete_uni_plans(payload: DeletePlansIn, request: Request, db: Session = Depends(get_db)):
+    assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    data = await uni_plan_service.delete_plans(db, payload)
+    return ok(data)
+
+
 @router.post("/plan/update-status", summary="启停全域计划")
 async def update_plan_status(payload: UpdateStatusIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
     data = await uni_plan_service.update_plan_status(db, payload)
+    return ok(data)
+
+
+@router.get("/plan/uni/awemes", summary="商品全域可投抖音号")
+async def list_uni_awemes(
+    request: Request,
+    advertiser_id: int = Query(..., description="千川子账户 ID"),
+    db: Session = Depends(get_db),
+):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
+    rows = await uni_create_service.list_awemes(db, advertiser_id)
+    return ok(rows)
+
+
+@router.get("/plan/uni/products", summary="商品全域可选商品")
+async def list_uni_products(
+    request: Request,
+    advertiser_id: int = Query(..., description="千川子账户 ID"),
+    aweme_id: int | None = Query(None, description="有号商家传抖音号，无号不传"),
+    keyword: str = Query("", description="商品名"),
+    page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
+    data = await uni_create_service.list_products(
+        db, advertiser_id, aweme_id=aweme_id, keyword=keyword, page=page
+    )
+    return ok(data)
+
+
+@router.post("/plan/uni/upload-video", summary="上传商品全域视频素材")
+async def upload_uni_video(
+    request: Request,
+    advertiser_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
+    content = await file.read()
+    data = await uni_create_service.upload_video(
+        db, advertiser_id, file.filename or "video.mp4", content
+    )
+    return ok(data)
+
+
+@router.post("/plan/uni/upload-image", summary="上传商品全域图片素材")
+async def upload_uni_image(
+    request: Request,
+    advertiser_id: int = Form(...),
+    kind: str = Form("card"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    assert_advertiser_access(db, current_username(request), advertiser_id)
+    content = await file.read()
+    data = await uni_create_service.upload_image(
+        db,
+        advertiser_id,
+        file.filename or "image.jpg",
+        content,
+        kind="cover" if kind == "cover" else "card",
+    )
+    return ok(data)
+
+
+@router.post("/plan/uni/create", summary="新建商品全域计划")
+async def create_uni_plan(payload: CreateUniPlanIn, request: Request, db: Session = Depends(get_db)):
+    assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    data = await uni_create_service.create_plan(db, payload)
     return ok(data)
 
 

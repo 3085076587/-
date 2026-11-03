@@ -55,3 +55,38 @@ class UpdateStatusIn(BaseModel):
     advertiser_id: int
     ad_id: int
     opt_status: str = Field(..., description="ENABLE / DISABLE")
+
+
+class DeletePlanItem(BaseModel):
+    ad_id: str
+    status: str = ""
+    opt_status: str = ""
+    status_label: str = ""
+    stat_cost: float | None = None
+
+
+class DeletePlansIn(BaseModel):
+    advertiser_id: int
+    plans: list[DeletePlanItem] = Field(..., min_length=1, max_length=10)
+
+
+class CreateUniPlanIn(BaseModel):
+    advertiser_id: int
+    name: str = Field(..., min_length=1, max_length=100)
+    aweme_id: int | None = None
+    smart_bid_type: str
+    roi2_goal: float | None = None
+    budget: float = Field(..., gt=0)
+    video_schedule_type: str = "SCHEDULE_FROM_NOW"
+    start_time: str | None = None
+    end_time: str | None = None
+    qcpx_mode: str = "QCPX_MODE_OFF"
+    deep_external_action: str = "AD_CONVERT_TYPE_LIVE_PURE_PAY_ROI"
+    product_ids: list[str] = Field(..., min_length=1, max_length=30)
+    title: str = ""
+    video_id: str | None = None
+    video_cover_id: str | None = None
+    video_image_mode: str | None = None
+    card_image_id: str | None = None
+    selling_point: str | None = None
+    action_button: str = "查看详情"
