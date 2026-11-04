@@ -17,6 +17,16 @@ class PlanReportSyncOut(BaseModel):
     updated: int
 
 
+class SaveProductRefundIn(BaseModel):
+    advertiser_id: int = Field(..., description="千川子账户ID")
+    product_id: int = Field(..., description="商品ID")
+    product_name: str = Field("", description="商品标题，商品还没入库时用来补一行")
+    actual_refund_rate: str | float | None = Field(
+        default=None,
+        description="实际退款率百分数，10 表示 10%。空表示清空",
+    )
+
+
 class SaveCommissionIn(BaseModel):
     advertiser_id: int = Field(..., description="千川子账户ID")
     ad_id: int = Field(..., description="计划ID")

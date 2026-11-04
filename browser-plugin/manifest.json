@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "千川方舟",
+  "version": "1.4.1",
+  "description": "子账户和计划与 ROI。实际退款率手填，并显示预估利润和利润。",
+  "permissions": ["storage", "cookies", "tabs", "scripting"],
+  "host_permissions": [
+    "http://120.76.58.132:8081/*",
+    "https://business.oceanengine.com/*",
+    "https://*.oceanengine.com/*"
+  ],
+  "action": {
+    "default_title": "千川方舟"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://business.oceanengine.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["app.html"],
+      "matches": ["https://business.oceanengine.com/*"]
+    }
+  ]
+}

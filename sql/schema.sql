@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS qianchuan_product (
   product_id BIGINT NOT NULL COMMENT '商品ID',
   product_name VARCHAR(512) NOT NULL DEFAULT '' COMMENT '商品标题',
   commission_pct DECIMAL(8,4) NULL COMMENT '商品佣金%，空则按默认 60',
+  actual_refund_rate DECIMAL(8,6) NULL COMMENT '用户填写的实际退款率（0~1），空表示未填',
   first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '首次出现时间',
   last_sync_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最近同步时间',
   PRIMARY KEY (id),

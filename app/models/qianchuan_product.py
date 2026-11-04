@@ -29,6 +29,9 @@ class QianchuanProduct(Base):
     commission_pct: Mapped[float | None] = mapped_column(
         Numeric(8, 4), nullable=True, comment="商品佣金%，空则按默认 60"
     )
+    actual_refund_rate: Mapped[float | None] = mapped_column(
+        Numeric(8, 6), nullable=True, comment="用户填写的实际退款率（0~1），空表示未填"
+    )
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="首次出现时间"
     )

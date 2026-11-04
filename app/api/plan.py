@@ -6,8 +6,15 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.exceptions import AppError
 from app.core.response import ok
-from app.schemas.plan import CreateUniPlanIn, DeletePlansIn, SaveCommissionIn, UpdateRoiIn, UpdateStatusIn
-from app.services import overview_service, plan_service, today_plan_cache, uni_create_service, uni_plan_service
+from app.schemas.plan import (
+    CreateUniPlanIn,
+    DeletePlansIn,
+    SaveCommissionIn,
+    SaveProductRefundIn,
+    UpdateRoiIn,
+    UpdateStatusIn,
+)
+from app.services import overview_service, plan_service, product_refund, today_plan_cache, uni_create_service, uni_plan_service
 from app.services.account_access import assert_advertiser_access, current_username
 
 router = APIRouter(tags=["Plan"])
@@ -53,6 +60,7 @@ async def list_uni_plans(
         data = await uni_plan_service.list_uni_plans(
             db, advertiser_id, start_date=start, end_date=end
         )
+        product_refund.attach_refund_rates(db, advertiser_id, data.get("plans") or [])
         return ok(data)
     try:
         data = await uni_plan_service.list_uni_plans(
@@ -63,6 +71,7 @@ async def list_uni_plans(
         if cached is None:
             raise
         cached["note"] = f"本次没拉到，仍显示该账户上一份计划（{exc}）"
+        product_refund.attach_refund_rates(db, advertiser_id, cached.get("plans") or [])
         return ok(cached)
     plans = list(data.get("plans") or [])
     saved = await today_plan_cache.put_account(
@@ -75,6 +84,24 @@ async def list_uni_plans(
     await overview_service.patch_today_account(db, advertiser_id, plans)
     data["cached_at"] = saved.get("cached_at")
     data["note"] = "只更新了当前账户的计划"
+    product_refund.attach_refund_rates(db, advertiser_id, data.get("plans") or [])
+    return ok(data)
+
+
+@router.post("/product/refund-rate", summary="保存商品实际退款率")
+def save_product_refund(
+    payload: SaveProductRefundIn,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    data = product_refund.save_product_refund(
+        db,
+        payload.advertiser_id,
+        payload.product_id,
+        payload.product_name,
+        payload.actual_refund_rate,
+    )
     return ok(data)
 
 

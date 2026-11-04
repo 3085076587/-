@@ -31,6 +31,13 @@ _REQUIRED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
             "AFTER settle_roi",
         ),
     ],
+    "qianchuan_product": [
+        (
+            "actual_refund_rate",
+            "DECIMAL(8,6) NULL COMMENT '用户填写的实际退款率（0~1），空表示未填'",
+            "AFTER commission_pct",
+        ),
+    ],
     "qianchuan_product_daily": [
         ("settle_roi", "DECIMAL(16,4) NULL COMMENT '净成交ROI'", "AFTER settle_amount"),
         ("refund_rate_1h", "DECIMAL(8,6) NULL COMMENT '1小时内退款率（0~1）'", "AFTER settle_roi"),

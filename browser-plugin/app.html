@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>千川方舟</title>
+  <link rel="stylesheet" href="app.css?v=20261104h">
+</head>
+<body>
+  <section id="login-box" class="login-shell hidden">
+    <div class="login-atmosphere" aria-hidden="true"></div>
+    <main class="login-stage">
+      <div class="brand-block">
+        <img class="brand-logo" src="logo.png" alt="千川方舟">
+        <h1 class="brand-name">千川方舟 ERP</h1>
+        <p class="brand-tag">投放数据一览 · 计划 ROI 调整</p>
+      </div>
+      <form class="login-form" id="login-form">
+        <label class="field">
+          <span>账号</span>
+          <input id="username" type="text" autocomplete="username" maxlength="64" placeholder="请输入账号">
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <div class="pwd-wrap">
+            <input id="password" type="password" autocomplete="current-password" maxlength="128" placeholder="请输入密码">
+            <button type="button" class="pwd-toggle" id="pwd-toggle">显示</button>
+          </div>
+        </label>
+        <p class="form-error hidden" id="form-error"></p>
+        <button type="submit" class="submit" id="submit-btn">进入工作台</button>
+      </form>
+    </main>
+  </section>
+  <div class="layout" id="workspace">
+    <div class="main">
+      <header class="topbar">
+        <nav class="top-nav">
+          <button type="button" id="tab-accounts" class="tab active">子账户</button>
+          <button type="button" id="tab-plans" class="tab">计划与 ROI</button>
+        </nav>
+        <div class="topbar-right">
+          <span class="topbar-user-avatar" id="who-avatar"></span>
+          <span id="who">未登录</span>
+          <button type="button" class="logout-link" id="btn-logout">退出登录</button>
+        </div>
+      </header>
+      <p id="status" class="status"></p>
+
+  <section id="accounts-view">
+    <div class="toolbar">
+      <label>时间
+        <select id="dash-range">
+          <option value="today" selected>今天</option>
+          <option value="7">近7天</option>
+          <option value="30">近30天</option>
+          <option value="custom">自定义</option>
+        </select>
+      </label>
+      <label class="custom hidden">开始 <input id="dash-start" type="date"></label>
+      <label class="custom hidden">结束 <input id="dash-end" type="date"></label>
+      <button type="button" id="btn-load-dash">刷新数据</button>
+      <button type="button" id="btn-sync">同步子账户</button>
+      <input id="account-search" type="search" placeholder="搜索账户名称或 ID">
+      <span id="account-count" class="muted"></span>
+    </div>
+    <div class="stats" id="overview"></div>
+    <p class="hint">1小时退款率显示已加 5%。先看计划。预估利润是这个账户下每条计划里的商品算完再相加。填了实际退款率就按这个比例扣，没填按 0。表格可以左右滑动。</p>
+    <div class="table-wrap">
+      <table id="account-table">
+        <thead>
+          <tr>
+            <th>账户信息</th>
+            <th>账户状态</th>
+            <th data-sort="stat_cost">整体消耗</th>
+            <th data-sort="pay_roi">整体支付ROI</th>
+            <th data-sort="pay_amount">用户实际支付金额</th>
+            <th data-sort="settle_amount">净成交金额</th>
+            <th data-sort="settle_roi">净成交ROI</th>
+            <th data-sort="refund_rate_1h">1小时内退款率</th>
+            <th data-sort="estimate">预估利润</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="account-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="plans-view" class="hidden">
+    <div class="toolbar">
+      <label>子账户
+        <select id="plan-advertiser"></select>
+      </label>
+      <label>时间
+        <select id="plan-range">
+          <option value="today" selected>今天</option>
+          <option value="7">近7天</option>
+          <option value="30">近30天</option>
+        </select>
+      </label>
+      <button type="button" id="btn-load-plans">拉取计划</button>
+      <button type="button" id="btn-delete-plans">批量删除</button>
+      <span id="plan-hint" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>开关</th>
+            <th>计划信息</th>
+            <th>状态</th>
+            <th>预算 / ROI目标</th>
+            <th>整体消耗</th>
+            <th>净成交金额</th>
+            <th>整体支付ROI</th>
+            <th>1小时内退款率</th>
+            <th>佣金%</th>
+            <th>实际退款率%</th>
+            <th>预估利润</th>
+            <th>提醒</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="plan-body"></tbody>
+      </table>
+    </div>
+  </section>
+    </div>
+  </div>
+
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-card">
+      <header>
+        <strong id="op-title">计划操作</strong>
+        <button type="button" id="op-close">关闭</button>
+      </header>
+      <p id="op-sub" class="muted"></p>
+      <label>净成交 ROI 目标 <input id="roi-value" inputmode="decimal"></label>
+      <label>提醒
+        <select id="roi-remind">
+          <option value="0">不提醒</option>
+          <option value="1800">30 分钟</option>
+          <option value="3600">1 小时</option>
+          <option value="7200">2 小时</option>
+        </select>
+      </label>
+      <button type="button" id="btn-roi-save">保存 ROI</button>
+      <button type="button" id="op-delete">删除此计划</button>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>操作人</th><th>类型</th><th>变更前</th><th>变更后</th></tr></thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </aside>
+
+  <script src="api.js"></script>
+  <script src="profit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
