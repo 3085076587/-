@@ -1,70 +1,405 @@
-#qc-fangzhou-host {
+#qc-fangzhou-panel {
   position: fixed;
-  top: 12px;
-  right: 12px;
+  top: 84px;
+  right: 16px;
   z-index: 2147483646;
-  width: min(880px, calc(100vw - 24px));
-  height: min(760px, calc(100vh - 24px));
+  width: 360px;
+  max-height: calc(100vh - 108px);
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border: 1px solid #e7e5e4;
-  border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.28);
+  background: #f3f7fd;
+  border: 2px solid #1677ff;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(22, 119, 255, 0.22);
   overflow: hidden;
-  font: 13px/1.4 "Segoe UI", "PingFang SC", sans-serif;
+  font: 13px/1.4 "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1d2129;
+  writing-mode: horizontal-tb;
 }
 
-#qc-fangzhou-host header {
+#qc-fangzhou-panel header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 8px 10px;
-  background: #1f2937;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #1677ff;
+  color: #fff;
+  border-bottom: 0;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+#qc-fangzhou-panel header strong {
+  font-size: 14px;
+  font-weight: 600;
   color: #fff;
 }
 
-#qc-fangzhou-host button {
+#qc-fangzhou-panel header strong::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 2px;
+  background: #fff;
+  vertical-align: 1px;
+}
+
+#qc-fangzhou-panel header button {
   border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+#qc-fangzhou-total {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 16px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #d6e4ff;
+  background: #f3f7fd;
+  writing-mode: horizontal-tb;
+  flex-wrap: wrap;
+  white-space: normal;
+}
+
+#qc-fangzhou-total span {
+  display: block;
+  color: #86909c;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+#qc-fangzhou-total b,
+#qc-fangzhou-total strong {
+  display: block;
+  margin-top: 2px;
+  color: #1d2129;
+  font-size: 16px;
+  font-weight: 600;
+  font-style: normal;
+}
+
+#qc-fangzhou-total .qc-sum-split {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+}
+
+#qc-fangzhou-total .qc-sum-main strong {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+#qc-fangzhou-total .pos,
+.qc-profit-badge b.pos,
+.qc-profit-col b.pos,
+.qc-profit-line strong.pos {
+  color: #00b42a !important;
+}
+
+#qc-fangzhou-total .neg,
+.qc-profit-badge b.neg,
+.qc-profit-col b.neg,
+.qc-profit-line strong.neg {
+  color: #f53f3f !important;
+}
+
+#qc-fangzhou-total .zero,
+.qc-profit-badge b.zero,
+.qc-profit-col b.zero,
+.qc-profit-line strong.zero {
+  color: #1d2129 !important;
+}
+
+#qc-fangzhou-list {
+  overflow: auto;
+  padding: 8px;
+  background: #eaf2fc;
+}
+
+.qc-plan-card {
+  border: 1px solid #d6e4ff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: #fff;
+}
+
+.qc-plan-card b {
+  display: block;
+  font-weight: 600;
+  color: #1d2129;
+}
+
+.qc-plan-card .qc-sub,
+.qc-profit-line em {
+  color: #86909c;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.qc-plan-card .qc-sub {
+  margin: 2px 0 6px;
+}
+
+.qc-profit-line {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.qc-source {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: #f4f8ff;
+  border-radius: 6px;
+}
+
+.qc-source div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.qc-source span {
+  color: #86909c;
+}
+
+.qc-source b {
+  color: #1d2129;
+  font-weight: 600;
+}
+
+.qc-source b.miss {
+  color: #c9cdd4;
+  font-weight: 500;
+}
+
+.qc-profit-badge .qc-source,
+.qc-profit-col .qc-source {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.qc-profit-line strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.qc-roi-line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.qc-profit-badge .qc-filled,
+.qc-profit-col .qc-filled,
+.qc-profit-line .qc-filled {
+  color: #4e5969 !important;
+}
+
+.qc-roi-line span {
+  width: 96px;
+  flex: none;
+  color: #4e5969;
+}
+
+.qc-mode-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f2f3f5;
+  background: #f7fbf8;
+}
+
+.qc-mode-line span {
+  flex: none;
+  color: #4e5969;
+  font-size: 12px;
+}
+
+.qc-mode-line select {
+  flex: 1;
+  height: 28px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+  color: #1d2129;
+  font: inherit;
+}
+
+.qc-roi-line input {
+  width: 88px;
+  height: 28px;
+  border: 1px solid #b9d4ff;
+  border-radius: 4px;
+  padding: 0 8px;
+  font: inherit;
+  color: #1d2129;
+  background: #fff;
+}
+
+.qc-profit-badge,
+.qc-profit-col,
+.qc-profit-head {
+  writing-mode: horizontal-tb !important;
+  text-orientation: mixed !important;
+  letter-spacing: normal !important;
+  white-space: nowrap !important;
+  box-sizing: border-box !important;
+}
+
+.qc-profit-badge,
+.qc-profit-col {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  justify-content: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  flex: 0 0 100% !important;
+  margin-top: 6px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  font: 12px/1.35 "PingFang SC", "Microsoft YaHei", sans-serif !important;
+}
+
+.qc-profit-col,
+.qc-profit-head {
+  flex: 0 0 188px !important;
+  width: 188px !important;
+  min-width: 188px !important;
+  max-width: 188px !important;
+  margin: 0 !important;
+  padding: 8px 12px !important;
+  overflow: hidden !important;
+}
+
+.qc-profit-head {
+  display: flex !important;
+  align-items: center !important;
+  color: #86909c !important;
+  font: 600 12px/1.4 "PingFang SC", "Microsoft YaHei", sans-serif !important;
+  background: transparent !important;
+}
+
+.qc-profit-badge b,
+.qc-profit-col b,
+.qc-profit-col span {
+  display: block !important;
+  writing-mode: horizontal-tb !important;
+  white-space: nowrap !important;
+}
+
+.qc-profit-badge b {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1.3 !important;
+}
+
+.qc-formula {
+  padding: 8px 14px;
+  border-bottom: 1px solid #d6e4ff;
+  background: #e8f2ff;
+  color: #1656b7;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: normal;
+}
+
+.qc-profit-badge {
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  gap: 4px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 0 0 100% !important;
+  margin: 2px 0 0 !important;
+  text-align: left !important;
+}
+
+.qc-profit-line {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.qc-help {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 14px !important;
+  height: 14px !important;
+  min-width: 14px;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid #c9cdd4 !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  color: #86909c !important;
+  font: 600 11px/14px "PingFang SC", "Microsoft YaHei", sans-serif !important;
+  cursor: help;
+  flex: none;
+}
+
+.qc-help-pop {
+  display: none;
+  position: fixed;
+  z-index: 2147483647;
+  width: 320px;
+  padding: 10px 12px;
+  border: 1px solid #e5e6eb;
   border-radius: 6px;
   background: #fff;
-  color: #1f2937;
-  padding: 4px 8px;
-  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(29, 33, 41, 0.16);
+  color: #1d2129;
+  font: 400 12px/1.6 "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
 }
 
-#qc-fangzhou-host iframe {
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #f6f3ec;
+.qc-profit-col b {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  line-height: 1.3 !important;
 }
 
-#qc-fangzhou-host.qc-login {
-  width: min(440px, calc(100vw - 24px));
-  height: min(560px, calc(100vh - 24px));
-  background: transparent;
-  border: 0;
+.qc-profit-badge b.miss {
+  color: #c9cdd4 !important;
+  font-weight: 500 !important;
+  font-size: 12px !important;
 }
 
-#qc-fangzhou-host.qc-login header {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  left: auto;
-  z-index: 2;
-  padding: 0;
-  background: transparent;
+.qc-profit-col b.miss,
+.qc-profit-line strong.miss {
+  color: #c9cdd4 !important;
+  font-weight: 500 !important;
+  font-size: 18px !important;
 }
 
-#qc-fangzhou-host.qc-login header strong {
-  display: none;
-}
-
-#qc-fangzhou-host.qc-login header button {
-  background: rgba(255, 252, 247, 0.92);
-  color: #1a4a3c;
-  border: 1px solid rgba(20, 32, 28, 0.12);
+.qc-profit-badge span,
+.qc-profit-col span {
+  margin-top: 2px !important;
+  color: #86909c !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
 }

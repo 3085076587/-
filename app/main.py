@@ -33,6 +33,7 @@ _PUBLIC_EXACT = {
     "/favicon.ico",
     "/api/auth/login",
     "/api/oauth/callback",
+    "/api/plugin/page",
 }
 _PUBLIC_PREFIX = ("/static/",)
 

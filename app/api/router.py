@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import advertiser, auth, oauth, overview, plan, query, reminder, token
+from app.api import advertiser, auth, oauth, overview, plan, plugin, query, reminder, token
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router)
@@ -8,6 +8,7 @@ api_router.include_router(oauth.router)
 api_router.include_router(advertiser.router)
 api_router.include_router(overview.router)
 api_router.include_router(plan.router)
+api_router.include_router(plugin.router)
 api_router.include_router(reminder.router)
 api_router.include_router(token.router)
 api_router.include_router(query.router)

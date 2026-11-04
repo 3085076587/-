@@ -1,13 +1,11 @@
 {
   "manifest_version": 3,
   "name": "千川方舟",
-  "version": "1.4.1",
-  "description": "子账户和计划与 ROI。实际退款率手填，并显示预估利润和利润。",
-  "permissions": ["storage", "cookies", "tabs", "scripting"],
+  "version": "1.7.19",
+  "description": "进入千川全域投放商品计划页后填写实际退款率和佣金，预估利润直接显示在原站表格上。",
+  "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
-    "http://120.76.58.132:8081/*",
-    "https://business.oceanengine.com/*",
-    "https://*.oceanengine.com/*"
+    "https://qianchuan.jinritemai.com/*"
   ],
   "action": {
     "default_title": "千川方舟"
@@ -17,16 +15,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://business.oceanengine.com/*"],
+      "matches": ["https://qianchuan.jinritemai.com/*"],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["app.html"],
-      "matches": ["https://business.oceanengine.com/*"]
     }
   ]
 }
