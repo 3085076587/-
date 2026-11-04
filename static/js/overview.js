@@ -212,8 +212,6 @@
     el("kpi-profit-rate").textContent = board.profit_rate == null ? "-" : `${(Number(board.profit_rate) * 100).toFixed(2)}%`;
     el("kpi-pay").textContent = "¥" + money(board.pay_amount);
     el("kpi-pay-roi").textContent = board.pay_roi == null ? "-" : Number(board.pay_roi).toFixed(2);
-    el("kpi-orders").textContent = board.order_count == null ? "-" : Number(board.order_count).toLocaleString("zh-CN");
-    el("kpi-order-cost").textContent = board.order_cost == null ? "-" : "¥" + money(board.order_cost);
     el("kpi-settle").textContent = "¥" + money(board.settle_amount);
     el("kpi-settle-roi").textContent = board.settle_roi == null ? "-" : Number(board.settle_roi).toFixed(2);
     el("kpi-people").textContent = k.people_count ?? 0;

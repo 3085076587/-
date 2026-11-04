@@ -29,30 +29,26 @@ ALL_PERSON = ""
 
 
 def _blank() -> dict[str, float | int]:
-    return {"stat_cost": 0.0, "pay_amount": 0.0, "settle_amount": 0.0, "order_count": 0}
+    return {"stat_cost": 0.0, "pay_amount": 0.0, "settle_amount": 0.0}
 
 
 def _add(bucket: dict[str, float | int], item: dict[str, Any]) -> None:
     bucket["stat_cost"] = float(bucket["stat_cost"]) + float(item.get("stat_cost") or 0)
     bucket["pay_amount"] = float(bucket["pay_amount"]) + float(item.get("pay_amount") or 0)
     bucket["settle_amount"] = float(bucket["settle_amount"]) + float(item.get("settle_amount") or 0)
-    bucket["order_count"] = int(bucket["order_count"]) + int(item.get("order_count") or 0)
 
 
 def _finish(bucket: dict[str, float | int], items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     cost = round(float(bucket["stat_cost"]), 2)
     pay = round(float(bucket["pay_amount"]), 2)
     settle = round(float(bucket["settle_amount"]), 2)
-    orders = int(bucket["order_count"])
     roi_items = items or []
     return {
         "stat_cost": cost,
         "pay_amount": pay,
         "settle_amount": settle,
-        "order_count": orders,
         "pay_roi": weighted_pay_roi(roi_items) if roi_items else None,
         "settle_roi": weighted_settle_roi(roi_items) if roi_items else None,
-        "order_cost": round(cost / orders, 2) if orders > 0 else None,
     }
 
 
@@ -130,19 +126,17 @@ def save_overview_day(db: Session, day: str, accounts: list[dict[str, Any]]) -> 
             stat_cost=metrics["stat_cost"],
             pay_amount=metrics["pay_amount"],
             settle_amount=metrics["settle_amount"],
-            order_count=metrics["order_count"],
+            order_count=0,
             pay_roi=metrics["pay_roi"],
             settle_roi=metrics["settle_roi"],
-            order_cost=metrics["order_cost"],
+            order_cost=None,
         )
         stmt = stmt.on_duplicate_key_update(
             stat_cost=stmt.inserted.stat_cost,
             pay_amount=stmt.inserted.pay_amount,
             settle_amount=stmt.inserted.settle_amount,
-            order_count=stmt.inserted.order_count,
             pay_roi=stmt.inserted.pay_roi,
             settle_roi=stmt.inserted.settle_roi,
-            order_cost=stmt.inserted.order_cost,
         )
         db.execute(stmt)
     db.commit()
@@ -159,7 +153,6 @@ def _sum_rows(rows: list[QianchuanOverviewDaily]) -> dict[str, Any]:
                 "stat_cost": row.stat_cost,
                 "pay_amount": row.pay_amount,
                 "settle_amount": row.settle_amount,
-                "order_count": row.order_count,
             },
         )
         parts.append(
@@ -192,7 +185,7 @@ def _advertiser_ids(db: Session, person: str | None) -> list[int]:
 
 
 def _from_account_daily(db: Session, days: list[str], person: str | None) -> dict[str, Any]:
-    """日汇总还没入库的日期，用账户日表补消耗、支付和净成交。订单数补不了，记 0。"""
+    """日汇总还没入库的日期，用账户日表补消耗、支付和净成交。"""
     ids = _advertiser_ids(db, person)
     bucket = _blank()
     if not ids or not days:
@@ -212,7 +205,7 @@ def _from_account_daily(db: Session, days: list[str], person: str | None) -> dic
     ).all()
     items: list[dict[str, Any]] = []
     for cost, pay, settle, pay_roi, settle_roi in rows:
-        _add(bucket, {"stat_cost": cost, "pay_amount": pay, "settle_amount": settle, "order_count": 0})
+        _add(bucket, {"stat_cost": cost, "pay_amount": pay, "settle_amount": settle})
         items.append(
             {
                 "stat_cost": float(cost or 0),
