@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
@@ -5,7 +7,7 @@ from app.api.deps import get_db
 from app.core.exceptions import AppError
 from app.core.response import ok
 from app.schemas.plan import CreateUniPlanIn, DeletePlansIn, SaveCommissionIn, UpdateRoiIn, UpdateStatusIn
-from app.services import plan_service, uni_create_service, uni_plan_service
+from app.services import overview_service, plan_service, today_plan_cache, uni_create_service, uni_plan_service
 from app.services.account_access import assert_advertiser_access, current_username
 
 router = APIRouter(tags=["Plan"])
@@ -44,9 +46,35 @@ async def list_uni_plans(
     db: Session = Depends(get_db),
 ):
     assert_advertiser_access(db, current_username(request), advertiser_id)
-    data = await uni_plan_service.list_uni_plans(
-        db, advertiser_id, start_date=start_date, end_date=end_date
+    today = date.today().isoformat()
+    start = start_date or today
+    end = end_date or today
+    if start != today or end != today:
+        data = await uni_plan_service.list_uni_plans(
+            db, advertiser_id, start_date=start, end_date=end
+        )
+        return ok(data)
+    try:
+        data = await uni_plan_service.list_uni_plans(
+            db, advertiser_id, start_date=today, end_date=today
+        )
+    except Exception as exc:
+        cached = await today_plan_cache.get_account(today, advertiser_id)
+        if cached is None:
+            raise
+        cached["note"] = f"本次没拉到，仍显示该账户上一份计划（{exc}）"
+        return ok(cached)
+    plans = list(data.get("plans") or [])
+    saved = await today_plan_cache.put_account(
+        today,
+        advertiser_id,
+        plans,
+        start_date=today,
+        end_date=today,
     )
+    await overview_service.patch_today_account(db, advertiser_id, plans)
+    data["cached_at"] = saved.get("cached_at")
+    data["note"] = "只更新了当前账户的计划"
     return ok(data)
 
 
@@ -59,6 +87,26 @@ async def save_commission(payload: SaveCommissionIn, request: Request, db: Sessi
         payload.ad_id,
         payload.commission_pct,
     )
+    today = date.today().isoformat()
+    cached = await today_plan_cache.get_account(today, payload.advertiser_id)
+    if cached is not None:
+        plans = list(cached.get("plans") or [])
+        for item in plans:
+            if int(item.get("ad_id") or 0) != int(payload.ad_id):
+                continue
+            item["commission_pct"] = uni_plan_service.plan_commission_sync.resolve_plan_commission_pct(
+                str(item.get("ad_name") or ""),
+                int(payload.ad_id),
+                {int(payload.ad_id): float(data["commission_pct"])} if data.get("commission_pct") else {},
+            )
+        await today_plan_cache.put_account(
+            today,
+            payload.advertiser_id,
+            plans,
+            start_date=str(cached.get("start_date") or today),
+            end_date=str(cached.get("end_date") or today),
+        )
+        await overview_service.patch_today_account(db, payload.advertiser_id, plans)
     return ok(data)
 
 

@@ -64,14 +64,17 @@ async def warmup_dashboard_cache() -> None:
 
 
 async def refresh_overview_today(*, force: bool) -> None:
-    """刷新今天总览缓存。force 为假时缓存还在就直接用，不打巨量。"""
+    """后台拉齐今天的全部账户。没完成不替换缓存，用户继续看上一份。"""
+    del force
+    from app.services import today_refresh
+
     db = SessionLocal()
     try:
-        data = await overview_service.load_today_snapshot(db, force=force)
-        if data.get("from_cache") and not force:
-            logger.info("今天的数据总览仍用缓存")
+        result = await today_refresh.refresh_today(db)
+        if result.get("published"):
+            logger.info("今天的数据已整份替换，%s 秒后再次刷新", OVERVIEW_TODAY_SECONDS)
         else:
-            logger.info("今天的数据总览已写入缓存，%s 秒后更新", OVERVIEW_TODAY_SECONDS)
+            logger.info("今天的刷新未完成，用户仍使用上一份数据：%s", result)
     except Exception as exc:
         logger.exception("今天的数据总览刷新失败：%s", exc)
     finally:

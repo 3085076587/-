@@ -257,13 +257,20 @@ def _finish_sum(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def empty_metrics() -> dict[str, Any]:
+    return _finish(_blank(), [])
+
+
 async def metrics_for_range(
     db: Session,
     start: str,
     end: str,
     person: str | None,
+    today_part: dict[str, Any] | None = None,
+    *,
+    fetch_today: bool = True,
 ) -> dict[str, Any]:
-    """区间汇总。今天走工作台实时，昨天及以前走日表。"""
+    """区间汇总。昨天及以前走日表。今天用已发布的工作台汇总，不再为了页面去打工作台。"""
     today = date.today().isoformat()
     if end > today:
         end = today
@@ -275,8 +282,11 @@ async def metrics_for_range(
         stored, _missing = read_stored_range(db, start, history_end, person)
         total = _finish_sum(total, stored)
     if include_today:
-        accounts = await load_roi2_accounts(today, today)
-        total = _finish_sum(total, rollup_accounts(accounts, person))
+        if today_part is not None:
+            total = _finish_sum(total, today_part)
+        elif fetch_today:
+            accounts = await load_roi2_accounts(today, today)
+            total = _finish_sum(total, rollup_accounts(accounts, person))
     return total
 
 

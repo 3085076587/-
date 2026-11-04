@@ -20,7 +20,7 @@ from app.core.redis_client import close_redis
 from app.core.response import fail
 from app.services import session_auth
 from app.services.product_report_service import seed_markers_from_daily
-from app.services.scheduler import daily_sync_loop, overview_today_loop, plan_commission_loop, token_refresh_loop
+from app.services.scheduler import daily_sync_loop, overview_today_loop, token_refresh_loop
 import app.models  # noqa: F401 注册 ORM 模型
 
 logger = logging.getLogger("uvicorn.error")
@@ -80,8 +80,6 @@ async def lifespan(_: FastAPI):
     task_logger.info("已启动每日 00:01 数据入库定时任务")
     today_task = asyncio.create_task(overview_today_loop(stop_event))
     task_logger.info("已启动今天数据总览 15 分钟刷新")
-    plan_comm_task = asyncio.create_task(plan_commission_loop(stop_event))
-    task_logger.info("已启动计划佣金 15 分钟同步")
     try:
         yield
     finally:
@@ -89,7 +87,6 @@ async def lifespan(_: FastAPI):
         refresh_task.cancel()
         daily_task.cancel()
         today_task.cancel()
-        plan_comm_task.cancel()
         try:
             await refresh_task
         except asyncio.CancelledError:
@@ -100,10 +97,6 @@ async def lifespan(_: FastAPI):
             pass
         try:
             await today_task
-        except asyncio.CancelledError:
-            pass
-        try:
-            await plan_comm_task
         except asyncio.CancelledError:
             pass
         await close_redis()

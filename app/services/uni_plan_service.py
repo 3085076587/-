@@ -109,6 +109,7 @@ async def list_uni_plans(
 
     plans: list[dict[str, Any]] = []
     page = 1
+    expected = 0
     while True:
         data = None
         last_exc: OceanEngineApiError | None = None
@@ -137,9 +138,15 @@ async def list_uni_plans(
             products = item.get("product_info") or []
             product_name = ""
             product_image = ""
+            product_id = None
             if products and isinstance(products[0], dict):
                 product_name = str(products[0].get("product_name") or "")
                 product_image = str(products[0].get("product_image") or "")
+                raw_pid = products[0].get("product_id")
+                try:
+                    product_id = int(raw_pid) if raw_pid not in (None, "") else None
+                except (TypeError, ValueError):
+                    product_id = None
             ad_id = int(ad_info.get("id") or 0)
             if not ad_id:
                 continue
@@ -160,6 +167,7 @@ async def list_uni_plans(
                     "advertiser_id": advertiser_id,
                     "ad_id": ad_id,
                     "ad_name": ad_name,
+                    "product_id": product_id,
                     "product_name": product_name,
                     "product_image": product_image,
                     "opt_status": str(ad_info.get("opt_status") or ""),
@@ -187,6 +195,8 @@ async def list_uni_plans(
         page_info = data.get("page_info") or {}
         batch = data.get("ad_list") or []
         total_number = int(page_info.get("total_number") or page_info.get("total_num") or 0)
+        if total_number > expected:
+            expected = total_number
         total_page = int(page_info.get("total_page") or 0)
         if total_number > 0:
             has_more = page * 50 < total_number
@@ -197,6 +207,9 @@ async def list_uni_plans(
         if not batch or not has_more:
             break
         page += 1
+
+    if expected and len(plans) < expected:
+        raise AppError(f"账户 {advertiser_id} 的计划没有拉全（{len(plans)}/{expected}）")
 
     if sync_commission and plans:
         await plan_commission_sync.sync_advertiser_plan_commissions(

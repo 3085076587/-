@@ -157,7 +157,8 @@
     const profitText = profits.length
       ? `利润合计 ${fmtMoney(profits.reduce((sum, n) => sum + n, 0))}`
       : "利润合计 -";
-    el("plan-hint").textContent = `1小时内退款率已加 5%。利润率 = 利润 / 净成交金额。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}`;
+    const scope = listMeta.note ? ` · ${listMeta.note}` : "";
+    el("plan-hint").textContent = `1小时内退款率已加 5%。利润率 = 利润 / 净成交金额。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}${scope}`;
   }
 
   function renderPlans(list) {
@@ -242,7 +243,7 @@
       for (const id of [...pickedIds]) {
         if (!alive.has(id)) pickedIds.delete(id);
       }
-      listMeta = { total: data.total || 0, start, end };
+      listMeta = { total: data.total || 0, start, end, note: data.note || "" };
       renderPlans(plansCache);
       paintBatch();
       paintHint();
