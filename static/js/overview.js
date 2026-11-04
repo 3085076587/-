@@ -308,7 +308,8 @@
       if (isAdmin) fillPersonOptions();
       renderAll();
     } catch (err) {
-      toast(err.message, "error");
+      const msg = err.message || "加载失败";
+      toast(msg, msg.includes("汇总") || msg.includes("稍后再") ? "warn" : "error");
     } finally {
       stopProgress();
       el("loading-mask").classList.add("hidden");

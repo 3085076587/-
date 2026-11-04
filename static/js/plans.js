@@ -79,6 +79,16 @@
     return pct;
   }
 
+  function commissionFormatWarn(item) {
+    const msg = item && item.commission_format_warning;
+    if (!msg || !String(msg).trim()) return "";
+    const safe = String(msg)
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;");
+    return `<span class="commission-warn" title="${safe}" aria-label="佣金格式可能有问题">!</span>`;
+  }
+
   function refundRatio(value) {
     let n = Number(value);
     if (!Number.isFinite(n) || n < 0) return null;
@@ -194,7 +204,7 @@
           <td class="col-profit">
             <div class="profit-with-rate">
               <span class="profit-num${profit != null && profit < 0 ? " num-neg" : ""}" data-profit-for="${item.ad_id}">${profit == null ? "-" : fmtMoney(profit)}</span>
-              <input class="rate-input" type="number" min="0" max="100" step="0.1" placeholder="佣金%" data-commission-id="${item.ad_id}" value="${commissionPct(item) == null ? "" : commissionPct(item)}">
+              <input class="rate-input" type="number" min="0" max="100" step="0.1" placeholder="佣金%" data-commission-id="${item.ad_id}" value="${commissionPct(item) == null ? "" : commissionPct(item)}">${commissionFormatWarn(item)}
             </div>
           </td>
           <td class="col-count"><span class="countdown" data-remind-ad="${item.ad_id}">-</span></td>

@@ -22,6 +22,7 @@ from app.core.redis_client import get_cache_redis
 from app.models.advertiser import QianchuanAdvertiser
 from app.services import (
     account_report_service,
+    daily_sync,
     overview_daily_service,
     product_report_service,
     token_store,
@@ -134,6 +135,7 @@ async def _fetch_advertiser_stats(
         product_report_service.upsert_products(
             db, advertiser_id, rows, stat_date=datetime.strptime(start, "%Y-%m-%d").date()
         )
+        product_report_service.mark_product_synced(db, advertiser_id, start, len(rows))
     else:
         product_report_service.upsert_products(db, advertiser_id, rows)
     return product_report_service.aggregate_products(rows, commission_map)
@@ -172,6 +174,24 @@ async def _get_person_stats(
                     if tick is not None:
                         await tick(max(1, len(advertiser_ids)), f"{person}：走缓存")
                     return cached
+
+            batch = product_report_service.person_aggregate_from_db(
+                db, advertiser_ids, start, end, commission_map
+            )
+            if batch is not None:
+                data = {
+                    "person": person,
+                    "profit": batch["profit"],
+                    "plan_cost": batch["plan_cost"],
+                    "plan_count": batch["plan_count"],
+                    "products": batch["products"],
+                    "failed_advertisers": 0,
+                    "from_cache": False,
+                }
+                await _write_cache(key, data)
+                if tick is not None:
+                    await tick(max(1, len(advertiser_ids)), f"{person}：读库完成")
+                return data
 
             async def run_one(adv_id: int) -> dict[str, Any]:
                 try:
@@ -461,6 +481,8 @@ async def _compute_today(db: Session, today: str, prog_key: str | None) -> dict[
         if not who:
             continue
         cost_by_person[who] += float(item.get("stat_cost") or 0)
+
+    commission_map = product_report_service.product_commissions(db)
     client = await token_store.build_client(db)
     gate = asyncio.Semaphore(max(1, int(settings.DASHBOARD_CONCURRENCY or 2)))
     targets = sorted(set(cost_by_person) | set(db_people))
@@ -699,6 +721,7 @@ async def build_overview(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
+    await daily_sync.ensure_history_ready_for_overview(db, start, end)
     today_d = date.today()
     today = today_d.isoformat()
     yesterday = (today_d - timedelta(days=1)).isoformat()

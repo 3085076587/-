@@ -25,16 +25,14 @@ _rate_lock = asyncio.Lock()
 _rate_wait_until = 0.0
 _report_lock = asyncio.Lock()
 _report_next = 0.0
-_REPORT_GAP_SECONDS = 0.4
-
-
 async def _pace_report() -> None:
-    """账户报表两次请求至少隔开 0.4 秒，避免并发把巨量打成 50000。"""
+    """报表类接口串行节流。间隔见 OCEAN_REPORT_GAP_SECONDS（默认 0.65s，偏保守防 40100）。"""
     global _report_next
+    gap = max(0.25, float(get_settings().OCEAN_REPORT_GAP_SECONDS or 0.65))
     async with _report_lock:
         now = time.monotonic()
         wait = max(0.0, _report_next - now)
-        _report_next = max(now, _report_next) + _REPORT_GAP_SECONDS
+        _report_next = max(now, _report_next) + gap
     if wait:
         await asyncio.sleep(wait)
 
@@ -175,12 +173,13 @@ class OceanEngineClient:
                     server_attempt=server_attempt + 1,
                     repeat_lists=repeat_lists,
                 )
+            max_rate_retries = max(2, int(get_settings().OCEAN_RATE_LIMIT_RETRIES or 6))
             if (
                 with_token
-                and rate_limit_attempt < 2
+                and rate_limit_attempt < max_rate_retries
                 and _message_is_rate_limit(message, ocean_code)
             ):
-                wait = 2 * (rate_limit_attempt + 1)
+                wait = 2.5 * (rate_limit_attempt + 1)
                 logger.warning("巨量频控 code=%s，%s 秒后重试：%s", ocean_code, wait, message)
                 await _hold_rate_limit(wait)
                 await asyncio.sleep(wait)

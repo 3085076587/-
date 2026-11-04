@@ -10,16 +10,23 @@ import asyncio
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
 from app.models.advertiser import QianchuanAdvertiser
+from app.models.qianchuan_overview_daily import QianchuanOverviewDaily
 from app.services import account_report_service, overview_daily_service, product_report_service, token_store
 from app.services.advertiser_dashboard import load_roi2_accounts
+from app.services.daily_sync_status import mark_finished, mark_running
+from app.services.overview_daily_service import ALL_PERSON
+from app.services.sync_retry import async_retry
 
 logger = get_task_logger()
+
+# 与总览利润起始日一致：更早的日期本来就不入库，不参与「是否汇总完成」拦截。
+DATA_FROM = date(2026, 10, 1)
 
 
 def yesterday_str() -> str:
@@ -30,57 +37,213 @@ def all_advertiser_ids(db: Session) -> list[int]:
     return [int(x) for x in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
 
 
+def _iter_days(start: str, end: str) -> list[str]:
+    d0 = date.fromisoformat(start)
+    d1 = date.fromisoformat(end)
+    days: list[str] = []
+    while d0 <= d1:
+        days.append(d0.isoformat())
+        d0 += timedelta(days=1)
+    return days
+
+
+def verify_day_completeness(db: Session, day: str, advertiser_ids: list[int] | None = None) -> dict[str, Any]:
+    """检查某天账户/总览/商品标记是否齐全（不打接口）。"""
+    adv_ids = advertiser_ids if advertiser_ids is not None else all_advertiser_ids(db)
+    stat = date.fromisoformat(day)
+    overview_rows = db.scalar(
+        select(func.count())
+        .select_from(QianchuanOverviewDaily)
+        .where(QianchuanOverviewDaily.stat_date == stat)
+    )
+    overview_all = db.scalar(
+        select(func.count())
+        .select_from(QianchuanOverviewDaily)
+        .where(
+            QianchuanOverviewDaily.stat_date == stat,
+            QianchuanOverviewDaily.person == ALL_PERSON,
+        )
+    )
+    missing_account = account_report_service.advertisers_missing_account_day(db, day, adv_ids)
+    missing_product = product_report_service.advertisers_missing_product_marker(db, day, adv_ids)
+    complete = (
+        len(missing_account) == 0
+        and int(overview_all or 0) > 0
+        and len(missing_product) == 0
+    )
+    return {
+        "day": day,
+        "advertiser_total": len(adv_ids),
+        "account_day_missing": missing_account,
+        "account_day_missing_count": len(missing_account),
+        "overview_row_count": int(overview_rows or 0),
+        "overview_all_ok": int(overview_all or 0) > 0,
+        "product_marker_missing": missing_product,
+        "product_marker_missing_count": len(missing_product),
+        "complete": complete,
+    }
+
+
+def history_range_ready(db: Session, start: str, end: str) -> tuple[bool, str | None]:
+    """区间内每个已结束、且不早于 DATA_FROM 的自然日是否都已验收通过。"""
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    hist_end = date.fromisoformat(end) if end < today.isoformat() else yesterday
+    hist_start = max(date.fromisoformat(start), DATA_FROM)
+    if hist_start > hist_end:
+        return True, None
+    bad: list[str] = []
+    for day in _iter_days(hist_start.isoformat(), hist_end.isoformat()):
+        if not verify_day_completeness(db, day)["complete"]:
+            bad.append(day)
+    if not bad:
+        return True, None
+    if len(bad) == 1 and bad[0] == yesterday.isoformat():
+        return False, "系统正在汇总昨天的数据，请稍后再查看。"
+    shown = "、".join(bad[:8])
+    extra = f" 等 {len(bad)} 天" if len(bad) > 8 else ""
+    return False, f"历史数据尚未汇总完成（{shown}{extra}），请稍后再查看。"
+
+
+async def ensure_history_ready_for_overview(db: Session, start: str, end: str) -> None:
+    """正在汇总的那一天落在查询区间内，或历史日未验收时，禁止总览继续。今天单独查询不受影响。"""
+    from app.core.exceptions import AppError
+    from app.services.daily_sync_status import running_info
+
+    running = await running_info()
+    if running:
+        day = str(running.get("day") or "")
+        if day and start <= day <= end:
+            raise AppError(f"系统正在汇总 {day} 的数据，请稍后再查看。", code=50301)
+    ok, msg = history_range_ready(db, start, end)
+    if not ok and msg:
+        raise AppError(msg, code=50301)
+
+
 async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
     """入库指定某天的账户 + 全部账户商品数据。返回统计。"""
+    await mark_running(day)
     settings = get_settings()
+    retries = max(1, int(settings.DAILY_SYNC_MAX_RETRIES or 5))
+    base_delay = float(settings.DAILY_SYNC_RETRY_BASE_SECONDS or 3.0)
+    pause = max(0.0, float(settings.DAILY_SYNC_PAUSE_SECONDS or 0))
+    concurrency = max(1, int(settings.DAILY_SYNC_CONCURRENCY or 1))
+
     result: dict[str, Any] = {
         "day": day,
         "account_rows": 0,
         "overview_rows": 0,
         "product_ok": 0,
         "product_fail": 0,
+        "product_retries": 0,
+        "markers_filled": 0,
     }
 
-    # 1) 账户维度：一次工作台请求写全部账户
     try:
-        result["account_rows"] = await account_report_service.sync_account_day(db, day)
-    except Exception as exc:  # noqa: BLE001
-        result["account_rows"] = -1
-        logger.exception("每日同步-账户失败 %s：%s", day, exc)
 
-    # 1b) 总览日汇总：同一份工作台账户表，按子账户页口径写入全部和每个运营
-    try:
-        accounts = await load_roi2_accounts(day, day)
-        result["overview_rows"] = overview_daily_service.save_overview_day(db, day, accounts)
-    except Exception as exc:  # noqa: BLE001
-        result["overview_rows"] = -1
-        logger.exception("每日同步-总览汇总失败 %s：%s", day, exc)
+        async def load_accounts() -> list[dict[str, Any]]:
+            return await load_roi2_accounts(day, day)
 
-    # 2) 商品维度：逐账户单日入库，并发受限流保护
-    client = await token_store.build_client(db)
-    gate = asyncio.Semaphore(max(1, int(settings.DASHBOARD_CONCURRENCY or 2)))
-    adv_ids = all_advertiser_ids(db)
-    ok = fail = 0
+        accounts: list[dict[str, Any]] = []
+        try:
+            accounts = await async_retry(
+                load_accounts,
+                attempts=retries,
+                base_delay_seconds=base_delay,
+                label=f"每日同步-工作台 {day}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["account_rows"] = -1
+            result["overview_rows"] = -1
+            logger.exception("每日同步-工作台失败 %s：%s", day, exc)
+            accounts = []
 
-    async def one(adv: int) -> None:
-        nonlocal ok, fail
-        async with gate:
+        if accounts:
             try:
-                await product_report_service.sync_day(client, db, adv, day)
-                ok += 1
+                result["account_rows"] = account_report_service.upsert_account_day_rows(db, day, accounts)
+                adv_ids_early = all_advertiser_ids(db)
+                result["account_zero_filled"] = account_report_service.fill_missing_account_days_zero(
+                    db, day, adv_ids_early
+                )
             except Exception as exc:  # noqa: BLE001
-                fail += 1
-                logger.warning("每日同步-商品失败 账户%s %s：%s", adv, day, exc)
+                result["account_rows"] = -1
+                logger.exception("每日同步-账户日表失败 %s：%s", day, exc)
+            try:
+                result["overview_rows"] = overview_daily_service.save_overview_day(db, day, accounts)
+            except Exception as exc:  # noqa: BLE001
+                result["overview_rows"] = -1
+                logger.exception("每日同步-总览汇总失败 %s：%s", day, exc)
 
-    await asyncio.gather(*(one(a) for a in adv_ids))
-    result.update(product_ok=ok, product_fail=fail, product_total=len(adv_ids))
-    logger.info(
-        "每日同步完成 %s：账户 %s 行，总览汇总 %s 行，商品 成功 %s / 失败 %s / 共 %s",
-        day,
-        result["account_rows"],
-        result["overview_rows"],
-        ok,
-        fail,
-        len(adv_ids),
-    )
-    return result
+        adv_ids = all_advertiser_ids(db)
+        pre_markers = product_report_service.finalize_product_markers_for_day(db, day, adv_ids)
+        need_pull = product_report_service.advertisers_missing_product_marker(db, day, adv_ids)
+        logger.info(
+            "每日同步 %s：商品预补标记 %s，仍需拉接口 %s / %s 户",
+            day,
+            pre_markers,
+            len(need_pull),
+            len(adv_ids),
+        )
+
+        client = await token_store.build_client(db)
+        gate = asyncio.Semaphore(concurrency)
+        extra_retries = 0
+
+        async def sync_one(adv: int) -> bool:
+            async with gate:
+                if pause:
+                    await asyncio.sleep(pause)
+
+                async def pull() -> None:
+                    await product_report_service.sync_day(client, db, adv, day)
+
+                try:
+                    await async_retry(
+                        pull,
+                        attempts=retries,
+                        base_delay_seconds=base_delay,
+                        label=f"每日同步-商品 账户{adv} {day}",
+                    )
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("每日同步-商品失败 账户%s %s：%s", adv, day, exc)
+                    return False
+
+        for adv in need_pull:
+            await sync_one(adv)
+
+        retry_round = product_report_service.advertisers_missing_product_marker(db, day, adv_ids)
+        if retry_round:
+            logger.info("每日同步 %s：商品标记仍缺 %s 户，开始第二轮重试", day, len(retry_round))
+            for adv in retry_round:
+                extra_retries += 1
+                await asyncio.sleep(base_delay * 2)
+                await sync_one(adv)
+
+        post_markers = product_report_service.finalize_product_markers_for_day(db, day, adv_ids)
+        result["markers_filled"] = int(pre_markers) + int(post_markers)
+        still_missing = product_report_service.advertisers_missing_product_marker(db, day, adv_ids)
+        ok = len(adv_ids) - len(still_missing)
+        result.update(
+            product_ok=ok,
+            product_fail=len(still_missing),
+            product_total=len(adv_ids),
+            product_retries=extra_retries,
+            product_still_missing=still_missing[:20],
+            verify=verify_day_completeness(db, day, adv_ids),
+        )
+        logger.info(
+            "每日同步完成 %s：账户 %s 行，总览汇总 %s 行，商品 成功 %s / 仍缺标记 %s / 共 %s，补标记 %s，完整=%s",
+            day,
+            result["account_rows"],
+            result["overview_rows"],
+            ok,
+            len(still_missing),
+            len(adv_ids),
+            result["markers_filled"],
+            result["verify"]["complete"],
+        )
+        return result
+    finally:
+        snapshot = result.get("verify") or verify_day_completeness(db, day)
+        await mark_finished(day, complete=bool(snapshot.get("complete")), detail=snapshot)

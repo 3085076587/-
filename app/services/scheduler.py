@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.log_setup import get_task_logger
-from app.services import daily_sync, dashboard_cache, overview_service, token_store, workbench_session
+from app.services import daily_sync, dashboard_cache, overview_service, plan_commission_sync, token_store, workbench_session
 
 logger = get_task_logger()
 
@@ -78,6 +78,40 @@ async def refresh_overview_today(*, force: bool) -> None:
         db.close()
 
 
+async def refresh_plan_commissions() -> None:
+    """全账户拉计划列表，按名称佣金与快照对比后更新 plan_commission。"""
+    db = SessionLocal()
+    try:
+        stats = await plan_commission_sync.sync_all_advertisers(db)
+        logger.info(
+            "计划佣金同步完成：账户 %s，更新 %s，删除 %s，失败 %s",
+            stats.get("advertisers"),
+            stats.get("updated"),
+            stats.get("deleted"),
+            stats.get("failed"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("计划佣金同步异常：%s", exc)
+    finally:
+        db.close()
+
+
+async def plan_commission_loop(stop_event: asyncio.Event) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=20)
+        return
+    except asyncio.TimeoutError:
+        pass
+    await refresh_plan_commissions()
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=OVERVIEW_TODAY_SECONDS)
+            break
+        except asyncio.TimeoutError:
+            pass
+        await refresh_plan_commissions()
+
+
 async def overview_today_loop(stop_event: asyncio.Event) -> None:
     try:
         await asyncio.wait_for(stop_event.wait(), timeout=20)
@@ -135,7 +169,15 @@ async def run_daily_sync() -> None:
     try:
         day = daily_sync.yesterday_str()
         logger.info("每日同步任务启动：目标日期 %s", day)
-        await daily_sync.sync_day_all(db, day)
+        result = await daily_sync.sync_day_all(db, day)
+        verify = result.get("verify") or {}
+        if not verify.get("complete"):
+            logger.warning(
+                "每日同步 %s 未完全入库：缺商品标记 %s 户，总览行 %s",
+                day,
+                verify.get("product_marker_missing_count"),
+                verify.get("overview_row_count"),
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("每日同步任务异常：%s", exc)
     finally:

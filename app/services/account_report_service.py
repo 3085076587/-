@@ -25,6 +25,11 @@ async def sync_account_day(db: Session, day: str) -> int:
     复用 load_roi2_accounts（一次请求返回全部账户），不改子账户页逻辑。
     """
     accounts = await advertiser_dashboard.load_roi2_accounts(day, day)
+    return upsert_account_day_rows(db, day, accounts)
+
+
+def upsert_account_day_rows(db: Session, day: str, accounts: list[dict[str, Any]]) -> int:
+    """把已拉取的工作台账户行写入账户日表（供每日同步复用同一次请求）。"""
     stat_date = datetime.strptime(day, "%Y-%m-%d").date()
     rows = 0
     for item in accounts:
@@ -53,6 +58,48 @@ async def sync_account_day(db: Session, day: str) -> int:
         rows += 1
     db.commit()
     return rows
+
+
+def fill_missing_account_days_zero(db: Session, day: str, advertiser_ids: list[int]) -> int:
+    """工作台未返回的户补零行，避免「库里有户、日表无行」导致验收永远不过。"""
+    missing = advertisers_missing_account_day(db, day, advertiser_ids)
+    if not missing:
+        return 0
+    stat_date = datetime.strptime(day, "%Y-%m-%d").date()
+    for adv_id in missing:
+        stmt = mysql_insert(QianchuanAccountDaily).values(
+            advertiser_id=int(adv_id),
+            stat_date=stat_date,
+            cost=0.0,
+            pay_amount=0.0,
+            pay_roi=None,
+            settle_amount=None,
+            settle_roi=None,
+            refund_rate_1h=None,
+        )
+        stmt = stmt.on_duplicate_key_update(cost=stmt.inserted.cost)
+        db.execute(stmt)
+    db.commit()
+    return len(missing)
+
+
+def advertisers_with_account_day(db: Session, day: str | date, advertiser_ids: list[int]) -> set[int]:
+    """这些账户里，哪些在指定日已有账户日表行。"""
+    if not advertiser_ids:
+        return set()
+    stat_date = _as_date(day)
+    rows = db.execute(
+        select(QianchuanAccountDaily.advertiser_id).where(
+            QianchuanAccountDaily.stat_date == stat_date,
+            QianchuanAccountDaily.advertiser_id.in_(advertiser_ids),
+        )
+    ).all()
+    return {int(r[0]) for r in rows}
+
+
+def advertisers_missing_account_day(db: Session, day: str | date, advertiser_ids: list[int]) -> list[int]:
+    have = advertisers_with_account_day(db, day, advertiser_ids)
+    return [int(a) for a in advertiser_ids if int(a) not in have]
 
 
 def has_account_day(db: Session, day: str | date) -> bool:

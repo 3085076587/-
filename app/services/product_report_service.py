@@ -558,6 +558,87 @@ def _covered(db: Session, advertiser_id: int, start: str, end: str) -> bool:
     return int(have or 0) >= len(days)
 
 
+def range_fully_synced(
+    db: Session, advertiser_ids: list[int], start: str, end: str
+) -> bool:
+    """这些账户在区间内是否每天都有商品同步标记（含零消耗空标记）。"""
+    if not advertiser_ids:
+        return True
+    for adv_id in advertiser_ids:
+        if not _covered(db, int(adv_id), start, end):
+            return False
+    return True
+
+
+def person_aggregate_from_db(
+    db: Session,
+    advertiser_ids: list[int],
+    start: str,
+    end: str,
+    commission_map: dict[int, float],
+) -> dict[str, Any] | None:
+    """多人多账户区间利润：日表齐全时一次读库聚合，不打接口。"""
+    if not range_fully_synced(db, advertiser_ids, start, end):
+        return None
+    profit = 0.0
+    plan_cost = 0.0
+    plan_count = 0
+    products: dict[int, dict[str, Any]] = {}
+    for adv_id in advertiser_ids:
+        block = stats_from_db(db, int(adv_id), start, end, commission_map)
+        if block is None:
+            return None
+        profit += float(block["profit"])
+        plan_cost += float(block["plan_cost"])
+        plan_count += int(block["plan_count"])
+        for pid, val in block["products"].items():
+            agg = products.setdefault(
+                int(pid),
+                {"name": val.get("name") or "无数据", "cost": 0.0, "sales": 0},
+            )
+            agg["name"] = val.get("name") or agg["name"]
+            agg["cost"] += float(val.get("cost") or 0)
+            agg["sales"] += int(val.get("sales") or 0)
+    return {
+        "profit": round(profit, 2),
+        "plan_cost": round(plan_cost, 2),
+        "plan_count": plan_count,
+        "products": [
+            {"pid": pid, "name": v["name"], "cost": round(v["cost"], 2), "sales": v["sales"]}
+            for pid, v in products.items()
+        ],
+        "failed_advertisers": 0,
+        "from_cache": False,
+        "source": "db_batch",
+    }
+
+
+def finalize_product_markers_for_day(db: Session, day: str, advertiser_ids: list[int]) -> int:
+    """补写零消耗/已有商品行但缺标记的账户，返回新补标记数。"""
+    added = 0
+    for adv_id in advertiser_ids:
+        if has_product_sync_marker(db, adv_id, day):
+            continue
+        cnt = product_row_count(db, adv_id, day)
+        if cnt:
+            mark_product_synced(db, adv_id, day, cnt)
+            added += 1
+            continue
+        if not _account_has_cost(db, adv_id, day):
+            mark_product_synced(db, adv_id, day, 0)
+            added += 1
+    return added
+
+
+def advertisers_missing_product_marker(db: Session, day: str, advertiser_ids: list[int]) -> list[int]:
+    """指定日期仍无商品同步标记的账户。"""
+    missing: list[int] = []
+    for adv_id in advertiser_ids:
+        if not has_product_sync_marker(db, adv_id, day):
+            missing.append(int(adv_id))
+    return missing
+
+
 def missing_days(db: Session, advertiser_id: int, start: str, end: str) -> list[str]:
     """区间内该账户尚无同步标记的日期（真正需要同步/补标记的）。"""
     have = {

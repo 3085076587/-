@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     # 子账户消耗并发拉取上限
     DASHBOARD_CONCURRENCY: int = 2
 
+    # 每日 00:01 入库：更低并发、更多重试，尽量把昨天数据写齐
+    DAILY_SYNC_CONCURRENCY: int = 1
+    DAILY_SYNC_MAX_RETRIES: int = 5
+    DAILY_SYNC_RETRY_BASE_SECONDS: float = 3.0
+    DAILY_SYNC_PAUSE_SECONDS: float = 2.0
+
+    # 开放平台报表类接口（data/get 等）两次请求最小间隔（秒）。官方未公开精确 QPS，现场以 40100 为准调慢。
+    OCEAN_REPORT_GAP_SECONDS: float = 0.65
+
+    # 巨量频控后单请求最多再试几次（与 daily_sync 的账户级重试叠加）
+    OCEAN_RATE_LIMIT_RETRIES: int = 6
+
     # 预设区间缓存预热间隔（秒），默认半小时
     DASHBOARD_CACHE_INTERVAL_SECONDS: int = 1800
 

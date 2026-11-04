@@ -1063,6 +1063,24 @@ th.sortable:hover {
     box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
 }
 
+.commission-warn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: #dc2626;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: help;
+    flex-shrink: 0;
+    vertical-align: middle;
+}
+
 .modal-lg {
     width: min(480px, 100%);
 }

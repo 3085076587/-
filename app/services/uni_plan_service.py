@@ -14,7 +14,7 @@ from app.clients.oceanengine import OceanEngineClient
 from app.core.exceptions import AppError, OceanEngineApiError
 from app.models.plan_commission import PlanCommission
 from app.schemas.plan import UpdateRoiIn, UpdateRoiOut, UpdateStatusIn
-from app.services import reminder_service, token_store
+from app.services import plan_commission_sync, reminder_service, token_store
 
 PLAN_FIELDS = [
     "stat_cost",
@@ -91,6 +91,7 @@ async def list_uni_plans(
     *,
     start_date: str | None = None,
     end_date: str | None = None,
+    sync_commission: bool = True,
 ) -> dict[str, Any]:
     today = date.today().isoformat()
     start = start_date or today
@@ -142,6 +143,7 @@ async def list_uni_plans(
             ad_id = int(ad_info.get("id") or 0)
             if not ad_id:
                 continue
+            ad_name = str(ad_info.get("name") or "")
             cost = _mf_to_yuan(stats.get("stat_cost"))
             settle = _mf_to_yuan(stats.get("total_order_settle_amount_for_roi2_1h"))
             pay = _mf_to_yuan(stats.get("total_pay_order_gmv_for_roi2"))
@@ -157,7 +159,7 @@ async def list_uni_plans(
                 {
                     "advertiser_id": advertiser_id,
                     "ad_id": ad_id,
-                    "ad_name": str(ad_info.get("name") or ""),
+                    "ad_name": ad_name,
                     "product_name": product_name,
                     "product_image": product_image,
                     "opt_status": str(ad_info.get("opt_status") or ""),
@@ -174,7 +176,12 @@ async def list_uni_plans(
                     "settle_amount": settle,
                     "settle_roi": _num(stats.get("total_prepay_and_pay_settle_roi2_1h")) or None,
                     "refund_rate_1h": refund_rate,
-                    "commission_pct": saved_commission.get(ad_id),
+                    "commission_pct": plan_commission_sync.resolve_plan_commission_pct(
+                        ad_name, ad_id, saved_commission
+                    ),
+                    "commission_format_warning": plan_commission_sync.commission_name_format_warning(
+                        ad_name
+                    ),
                 }
             )
         page_info = data.get("page_info") or {}
@@ -191,6 +198,29 @@ async def list_uni_plans(
             break
         page += 1
 
+    if sync_commission and plans:
+        await plan_commission_sync.sync_advertiser_plan_commissions(
+            db,
+            advertiser_id,
+            start=start,
+            end=end,
+            plans=plans,
+        )
+        saved_commission = {
+            int(row.ad_id): float(row.commission_pct)
+            for row in db.scalars(
+                select(PlanCommission).where(PlanCommission.advertiser_id == advertiser_id)
+            ).all()
+            if float(row.commission_pct) > 0
+        }
+        for item in plans:
+            ad_id = int(item.get("ad_id") or 0)
+            item["commission_pct"] = plan_commission_sync.resolve_plan_commission_pct(
+                str(item.get("ad_name") or ""),
+                ad_id,
+                saved_commission,
+            )
+
     return {
         "advertiser_id": advertiser_id,
         "start_date": start,
@@ -206,7 +236,11 @@ def save_plan_commission(
     ad_id: int,
     commission_pct: float | None,
 ) -> dict[str, Any]:
-    """佣金为空或 0 时删掉记录，页面上不显示利润。"""
+    """佣金为空或 0 时删掉记录，页面上不显示利润。
+
+    计划名里带 (佣金:xx%) 时，以名称解析为准；定时同步会覆盖手填值。
+    名称里没有佣金标记时，手填值保留。
+    """
     row = db.scalar(
         select(PlanCommission).where(
             PlanCommission.advertiser_id == advertiser_id,
