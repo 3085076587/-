@@ -121,8 +121,12 @@ async def overview_today_loop(stop_event: asyncio.Event) -> None:
         return
     except asyncio.TimeoutError:
         pass
-    # 刚启动时缓存还有效就接着用，避免每次重启都把全部账户再打一遍。
-    await refresh_overview_today(force=False)
+    # 今天的 15 分钟缓存还在就接着用。只有这份缓存是空的，启动时才跑一遍。
+    if await overview_service.today_cache_ready():
+        logger.info("今天的 15 分钟缓存还在，启动时不重跑")
+    else:
+        logger.info("今天的 15 分钟缓存是空的，启动时开始拉取")
+        await refresh_overview_today(force=False)
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=OVERVIEW_TODAY_SECONDS)

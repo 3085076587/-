@@ -279,7 +279,7 @@
       if (profitHint) {
         profitHint.textContent = data.profit_note
           ? data.profit_note
-          : "利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。今天把该店铺各商品利润相加，用的是总览那份 15 分钟缓存。10月1日之前没有商品日数据。";
+          : "利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。今天是该店铺各条计划的利润相加，和计划页同一笔算法，没填佣金的计划不计入。10月1日之前没有商品日数据。";
       }
       if (data.profit_note && String(data.profit_note).indexOf("没有10月份以前的数据") >= 0) {
         toast(data.profit_note, "warn");

@@ -28,6 +28,7 @@ from app.services import (
     daily_sync,
     overview_daily_service,
     product_report_service,
+    today_plan_cache,
     token_store,
 )
 from app.services.advertiser_dashboard import _has_parentheses, load_roi2_accounts, person_name
@@ -552,8 +553,19 @@ async def today_account_profits() -> dict[int, float] | None:
     }
 
 
+async def today_plan_profit_overlay(db: Session) -> dict[int, float]:
+    """已经拉过计划的账户，利润改成这些计划相加，和计划页同一笔数。"""
+    day = date.today().isoformat()
+    ids = [int(row) for row in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
+    cached = await today_plan_cache.mget_accounts(day, ids)
+    return {
+        adv_id: sum_plan_profits(list(item.get("plans") or []))
+        for adv_id, item in cached.items()
+    }
+
+
 async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, float] | None, str | None]:
-    """每个店铺的利润。今天用缓存里各商品利润相加，昨天及以前读日表。
+    """每个店铺的利润。今天有计划缓存时，按计划页同一笔算法相加；没有则用总览缓存。昨天及以前读日表。
 
     整段都早于 2026-10-01 时返回 None，调用方显示横杠。
     区间跨过 10 月 1 日时，只从这一天起算，并带上提示。
@@ -580,11 +592,14 @@ async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, flo
         have = True
     if include_today:
         today_map = await today_account_profits()
-        if today_map is None:
+        plan_map = await today_plan_profit_overlay(db)
+        if today_map is None and not plan_map:
             extra = "今天的利润缓存还没有，这次不含今天"
             note = f"{note}。{extra}" if note else extra
         else:
-            for adv_id, val in today_map.items():
+            merged = dict(today_map or {})
+            merged.update(plan_map)
+            for adv_id, val in merged.items():
                 profits[adv_id] += val
             have = True
     if not have:
@@ -593,36 +608,53 @@ async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, flo
 
 
 def plan_line_profit(plan: dict[str, Any]) -> float | None:
-    """单条计划利润。退款率用计划上的 1 小时退款率，再加 5%。佣金空或 0 按 60%。"""
+    """和计划页同一笔算法。
+
+    佣金没填或是 0 时这条不计入，页面上显示横杠。
+    支付 ROI 为空时按 0，利润就是负的消耗。退款率再加 5%。
+    """
+    try:
+        pct = float(plan.get("commission_pct"))
+    except (TypeError, ValueError):
+        return None
+    if not pct or pct <= 0:
+        return None
     try:
         cost = float(plan.get("stat_cost"))
     except (TypeError, ValueError):
         return None
-    roi = plan.get("pay_roi")
-    try:
-        roi_f = float(roi) if roi not in (None, "") else None
-    except (TypeError, ValueError):
-        roi_f = None
-    if roi_f is None:
-        pay = float(plan.get("pay_amount") or 0)
-        if cost > 0 and pay:
-            roi_f = pay / cost
+    roi_raw = plan.get("pay_roi")
+    if roi_raw in (None, ""):
+        roi_f = 0.0
+    else:
+        try:
+            roi_f = float(roi_raw)
+        except (TypeError, ValueError):
+            return None
     rate = plan.get("refund_rate_1h")
-    try:
-        rate_f = float(rate) if rate not in (None, "") else None
-    except (TypeError, ValueError):
-        rate_f = None
-    if roi_f is None or rate_f is None or rate_f < 0:
+    if rate in (None, ""):
         return None
-    while rate_f > 1 and rate_f <= 10000:
+    try:
+        rate_f = float(rate)
+    except (TypeError, ValueError):
+        return None
+    if rate_f < 0:
+        return None
+    if rate_f > 1 and rate_f <= 100:
         rate_f = rate_f / 100.0
     if rate_f > 1:
         return None
     refund = min(1.0, rate_f + product_report_service.REFUND_EXTRA)
-    pct = float(plan.get("commission_pct") or 0)
-    if pct <= 0:
-        pct = product_report_service.DEFAULT_COMMISSION_PCT
     return cost * roi_f * (1.0 - refund) * pct / 100.0 - cost
+
+
+def sum_plan_profits(plans: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for plan in plans:
+        line = plan_line_profit(plan)
+        if line is not None:
+            total += line
+    return round(total, 2)
 
 
 def _sales_from_product_rows(
@@ -820,20 +852,28 @@ async def patch_today_account(db: Session, advertiser_id: int, plans: list[dict[
         if not raw:
             return
         data = json.loads(raw)
-        if data.get("source") != "plans" or data.get("day") != date.today().isoformat():
+        if data.get("day") != date.today().isoformat():
             return
         accounts = data.setdefault("accounts", {})
         old = accounts.get(str(adv_id)) or {}
+        old_profit = float(old.get("profit") or 0)
         keep_sales = {
             int(item.get("pid") or 0): int(item.get("sales") or 0)
             for item in (old.get("products") or [])
             if int(item.get("pid") or 0)
         }
-        accounts[str(adv_id)] = account_from_plans(plans, keep_sales=keep_sales)
-        cost = float(((data.get("people") or {}).get(person) or {}).get("cost") or 0)
-        data.setdefault("people", {})[person] = _person_from_accounts(
-            person, people.get(person) or [adv_id], accounts, cost
-        )
+        new_account = account_from_plans(plans, keep_sales=keep_sales)
+        accounts[str(adv_id)] = new_account
+        people_rows = data.setdefault("people", {})
+        if data.get("source") == "plans":
+            cost = float((people_rows.get(person) or {}).get("cost") or 0)
+            people_rows[person] = _person_from_accounts(
+                person, people.get(person) or [adv_id], accounts, cost
+            )
+        else:
+            row = people_rows.get(person) or {"cost": 0.0, "profit": 0.0, "products": []}
+            row["profit"] = round(float(row.get("profit") or 0) - old_profit + float(new_account["profit"]), 2)
+            people_rows[person] = row
         ttl = int(await r.ttl(key))
         if ttl < 1:
             ttl = 36 * 3600
@@ -846,6 +886,15 @@ async def publish_today_snapshot(data: dict[str, Any]) -> None:
     """整份替换今天的总览缓存。调用方只有在全部账户都拉齐之后才调用。"""
     day = str(data.get("day") or date.today().isoformat())
     await _write_cache(_today_key(day), data, 36 * 3600)
+
+
+async def today_cache_ready() -> bool:
+    """今天的 15 分钟缓存里已经有总览数据时返回 True。"""
+    today = date.today().isoformat()
+    cached = await _read_cache(_today_key(today))
+    if not cached or cached.get("day") != today:
+        return False
+    return bool(cached.get("people") or cached.get("accounts") or cached.get("workbench"))
 
 
 async def load_today_snapshot(db: Session, *, force: bool = False, prog_key: str | None = None) -> dict[str, Any]:
