@@ -155,13 +155,7 @@ async def list_uni_plans(
             settle = _mf_to_yuan(stats.get("total_order_settle_amount_for_roi2_1h"))
             pay = _mf_to_yuan(stats.get("total_pay_order_gmv_for_roi2"))
             pay_roi = _num(stats.get("total_prepay_and_pay_order_roi2")) or None
-            pay_raw = _num(stats.get("total_pay_order_gmv_for_roi2"))
-            refund_gmv = _num(stats.get("total_refund_order_gmv_for_roi2_1h_all"))
-            api_rate = _norm_rate(stats.get("total_refund_order_gmv_for_roi2_1h_rate"))
-            if pay_raw > 0 and refund_gmv > 0:
-                refund_rate = round(min(1.0, refund_gmv / pay_raw), 6)
-            else:
-                refund_rate = api_rate
+            refund_rate = _norm_rate(stats.get("total_refund_order_gmv_for_roi2_1h_rate"))
             plans.append(
                 {
                     "advertiser_id": advertiser_id,

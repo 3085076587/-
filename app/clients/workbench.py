@@ -99,6 +99,19 @@ def _rate(value: Any) -> float | None:
     return round(number, 6)
 
 
+def _total_metrics(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """原站数据概览那一排合计。退货率用接口给的合计，不再用各账户退货率回推。"""
+    metrics = raw or {}
+    return {
+        "stat_cost": _money(metrics.get("stat_cost_for_roi2")),
+        "pay_amount": _money(metrics.get("total_pay_order_gmv_for_roi2")),
+        "pay_roi": _roi(metrics.get("total_prepay_and_pay_order_roi2")),
+        "settle_amount": _money(metrics.get("total_order_settle_amount_for_roi2_1h")),
+        "settle_roi": _roi(metrics.get("total_prepay_and_pay_settle_roi2_1h")),
+        "refund_rate_1h": _rate(metrics.get("total_refund_order_gmv_for_roi2_1h_rate")),
+    }
+
+
 def _account(item: dict[str, Any]) -> dict[str, Any] | None:
     adv_id = int(item.get("advertiser_id") or 0)
     if not adv_id:
@@ -128,8 +141,9 @@ async def fetch_product_accounts(
     end_date: str,
     page_size: int = _PAGE_SIZE,
     max_pages: int = _MAX_PAGES,
-) -> tuple[list[dict[str, Any]], str, str]:
-    """拉取商品投放账户表。返回账户行、更新后的 Cookie、csrf。"""
+    advertiser_ids: list[int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], str, str]:
+    """拉取商品投放账户表。返回账户行、原站合计、更新后的 Cookie、csrf。"""
     start_time, end_time = _unix_range(start_date, end_date)
     url = f"{_ORIGIN}/api/ebp/promotion/ecp/get_roi2_account_list"
     headers = {
@@ -145,8 +159,12 @@ async def fetch_product_accounts(
         "cookie": cookie,
     }
     accounts: list[dict[str, Any]] = []
+    total: dict[str, Any] = {}
     current_cookie = cookie
     current_csrf = headers["x-csrftoken"]
+    advertiser_filter: dict[str, Any] = {}
+    if advertiser_ids:
+        advertiser_filter = {"advertiserIds": [int(adv_id) for adv_id in advertiser_ids]}
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
         for page in range(1, max_pages + 1):
             body = {
@@ -162,7 +180,7 @@ async def fetch_product_accounts(
                 "filter": {
                     "pricingCategory": [2],
                     "campaign": {"marketingGoal": ["1"]},
-                    "advertiser": {},
+                    "advertiser": advertiser_filter,
                 },
                 "refer": _REFER,
             }
@@ -181,6 +199,8 @@ async def fetch_product_accounts(
                 message = str(payload.get("msg") or payload.get("message") or "工作台账户表请求失败")
                 raise AppError(message, code=50221)
             data = payload.get("data") or {}
+            if not total:
+                total = _total_metrics(data.get("totalMetrics"))
             chunk = data.get("list") or []
             for item in chunk:
                 if isinstance(item, dict):
@@ -197,4 +217,4 @@ async def fetch_product_accounts(
             )
             if not has_more or len(chunk) < page_size:
                 break
-    return accounts, current_cookie, current_csrf
+    return accounts, total, current_cookie, current_csrf

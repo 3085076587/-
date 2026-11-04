@@ -24,6 +24,13 @@ class Base(DeclarativeBase):
 
 # create_all 不会给已存在的表加列，这里声明需兜底补齐的列（表名 -> [(列名, 列定义, 位置)]）。
 _REQUIRED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
+    "qianchuan_overview_daily": [
+        (
+            "refund_rate_1h",
+            "DECIMAL(8,6) NULL COMMENT '1小时内退款率（0~1），原站合计'",
+            "AFTER settle_roi",
+        ),
+    ],
     "qianchuan_product_daily": [
         ("settle_roi", "DECIMAL(16,4) NULL COMMENT '净成交ROI'", "AFTER settle_amount"),
         ("refund_rate_1h", "DECIMAL(8,6) NULL COMMENT '1小时内退款率（0~1）'", "AFTER settle_roi"),

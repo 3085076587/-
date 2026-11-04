@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
 from app.models.advertiser import QianchuanAdvertiser
 from app.services import overview_service, product_report_service, today_plan_cache, token_store, uni_plan_service
-from app.services.advertiser_dashboard import load_roi2_accounts
+from app.services.advertiser_dashboard import load_roi2_accounts, take_roi2_total
 from app.services.sync_retry import async_retry
 
 logger = get_task_logger()
@@ -48,6 +48,7 @@ async def _refresh_today(db: Session) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.exception("今天刷新：工作台没拉到，继续用上一份缓存：%s", exc)
         return {"published": False, "reason": "workbench"}
+    official_total = take_roi2_total(today, today)
 
     client = await token_store.build_client(db)
     plans_by: dict[int, list[dict[str, Any]]] = {}
@@ -81,7 +82,9 @@ async def _refresh_today(db: Session) -> dict[str, Any]:
         if pause and index < len(adv_ids):
             await asyncio.sleep(pause)
 
-    snapshot = overview_service.assemble_today_snapshot(db, today, workbench, plans_by, products_by)
+    snapshot = overview_service.assemble_today_snapshot(
+        db, today, workbench, plans_by, products_by, official_total=official_total
+    )
     await overview_service.publish_today_snapshot(snapshot)
     for adv_id, plans in plans_by.items():
         await today_plan_cache.put_account(

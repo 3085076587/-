@@ -44,6 +44,7 @@ def upsert_account_day_rows(db: Session, day: str, accounts: list[dict[str, Any]
             pay_roi=item.get("pay_roi"),
             settle_amount=item.get("settle_amount"),
             settle_roi=item.get("settle_roi"),
+            # 账户退货率只用工作台账户表返回的 1 小时退货率，不用商品计划回推。
             refund_rate_1h=item.get("refund_rate_1h"),
         )
         stmt = stmt.on_duplicate_key_update(

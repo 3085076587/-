@@ -31,12 +31,17 @@ from app.services import (
     today_plan_cache,
     token_store,
 )
-from app.services.advertiser_dashboard import _has_parentheses, load_roi2_accounts, person_name
+from app.services.advertiser_dashboard import (
+    _has_parentheses,
+    load_roi2_accounts,
+    person_name,
+    take_roi2_total,
+)
 from app.services.dashboard_cache import get_progress, set_progress
 
 logger = logging.getLogger("uvicorn.error")
 
-CACHE_PREFIX = "ad_helper:overview:v2"
+CACHE_PREFIX = "ad_helper:overview:v4"
 TODAY_CACHE_PREFIX = "ad_helper:overview:today:v3"
 # 商品日表从这一天起才有数。更早的日期不算利润，只提示。
 PROFIT_FROM = date(2026, 10, 1)
@@ -779,14 +784,23 @@ def assemble_today_snapshot(
     workbench_accounts: list[dict[str, Any]],
     plans_by_adv: dict[int, list[dict[str, Any]]],
     products_by_adv: dict[int, list[dict[str, Any]]] | None = None,
+    official_total: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """用已经拉好的工作台账户和各账户计划拼今天的总览。不再打接口。
 
     消耗、支付、净成交、ROI 用工作台。利润用计划。商品销量仍用商品报表的订单数。
+    全部的 1 小时退货率用工作台合计，和原站数据概览同一笔。
     """
     products_by_adv = products_by_adv or {}
     db_people = _person_advertisers(db)
     board = overview_daily_service.rollup_people(workbench_accounts)
+    official_rate = (official_total or {}).get("refund_rate_1h")
+    if official_rate is None:
+        peeked = take_roi2_total(today, today)
+        official_rate = None if peeked is None else peeked.get("refund_rate_1h")
+    all_row = board.get(overview_daily_service.ALL_PERSON)
+    if official_rate is not None and isinstance(all_row, dict):
+        all_row["refund_rate_1h"] = official_rate
     targets = sorted({key for key in board if key} | set(db_people))
     people_out: dict[str, Any] = {}
     accounts_out: dict[str, Any] = {}
@@ -1085,11 +1099,11 @@ async def build_overview(
     ])
     errors = list(history["errors"] if history else []) + today_errors
     if has_history and include_today:
-        note = "昨天及以前的利润按商品日表相加；今天的利润按各账户计划相加。消耗、支付、净成交用工作台缓存。今天不写入日表。"
+        note = "昨天及以前按账户当天的 1 小时退货率算利润，再按天相加；今天按各条计划自己的退货率相加。消耗、支付、净成交用工作台缓存。"
         from_cache = bool(history["from_cache"]) and today_cache
         cached_at = max(history["cached_at"], today_at)
     elif include_today:
-        note = "今天的利润按各账户计划相加，消耗、支付、净成交用工作台缓存。后台每 15 分钟全部账户拉齐后才替换。这一天不写入日表。"
+        note = "今天的利润按各条计划自己的 1 小时退货率相加。顶部退货率用工作台这一段的合计，和原站同一笔。这一天不写入日表。"
         from_cache = today_cache
         cached_at = today_at
     else:

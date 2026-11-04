@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, text
@@ -62,6 +62,52 @@ def _norm_rate(value: Any) -> float | None:
     return round(min(1.0, max(0.0, num)), 6)
 
 
+def _day_key(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)[:10]
+
+
+def account_refund_rates(
+    db: Session,
+    start: str,
+    end: str,
+    advertiser_ids: list[int] | None = None,
+) -> dict[tuple[int, str], float]:
+    """账户某一天的 1 小时退货率。商品行自己没有退货率时用这个。"""
+    stmt = select(
+        QianchuanAccountDaily.advertiser_id,
+        QianchuanAccountDaily.stat_date,
+        QianchuanAccountDaily.refund_rate_1h,
+    ).where(
+        QianchuanAccountDaily.stat_date >= start,
+        QianchuanAccountDaily.stat_date <= end,
+        QianchuanAccountDaily.refund_rate_1h.is_not(None),
+    )
+    if advertiser_ids:
+        stmt = stmt.where(
+            QianchuanAccountDaily.advertiser_id.in_([int(adv_id) for adv_id in advertiser_ids])
+        )
+    found: dict[tuple[int, str], float] = {}
+    for adv_id, stat_date, rate in db.execute(stmt).all():
+        found[(int(adv_id), _day_key(stat_date))] = float(rate)
+    return found
+
+
+def refund_for_product_row(
+    product_rate: Any,
+    advertiser_id: int,
+    stat_date: Any,
+    account_rates: dict[tuple[int, str], float],
+) -> float | None:
+    """商品自己有 1 小时退货率就用商品的，没有就用这个账户当天的。"""
+    if product_rate is not None:
+        return float(product_rate)
+    return account_rates.get((int(advertiser_id), _day_key(stat_date)))
+
+
 def display_name(product_id: int, name: str | None) -> str:
     """有真名用真名；拿不到名（计划已不存在）时用商品ID后6位兜底，避免整列「无数据」。"""
     if name:
@@ -74,18 +120,18 @@ def profit_basis(
     cost: float,
     pay_amount: float,
     pay_roi: float | None,
-    settle_amount: float | None,
+    refund_rate_1h: float | None,
 ) -> tuple[float, float] | None:
-    """利润里跟佣金无关的部分。返回 (消耗×ROI×留存, 参与计算的消耗)，算不了返回 None。"""
+    """利润里跟佣金无关的部分。退款率只用接口给的 1 小时退货率，再加 5%。"""
     if cost <= 0 and not pay_amount:
         return None
     roi = pay_roi
     if roi is None and cost > 0 and pay_amount:
         roi = pay_amount / cost
-    if roi is None or settle_amount is None or pay_amount <= 0:
+    rate = _norm_rate(refund_rate_1h)
+    if roi is None or rate is None:
         return None
-    refund = max(0.0, min(1.0, 1.0 - float(settle_amount) / float(pay_amount)))
-    keep = 1.0 - min(1.0, refund + REFUND_EXTRA)
+    keep = 1.0 - min(1.0, rate + REFUND_EXTRA)
     return float(cost) * float(roi) * keep, float(cost)
 
 
@@ -93,11 +139,11 @@ def product_profit(
     cost: float,
     pay_amount: float,
     pay_roi: float | None,
-    settle_amount: float | None,
+    refund_rate_1h: float | None,
     commission_pct: float,
 ) -> float | None:
-    """商品口径利润：退款率用「1 − 净成交/支付GMV」推算，其余同计划页公式。"""
-    parts = profit_basis(cost, pay_amount, pay_roi, settle_amount)
+    """商品口径利润。退款率用已入库的 1 小时退货率，再加 5%。"""
+    parts = profit_basis(cost, pay_amount, pay_roi, refund_rate_1h)
     if parts is None:
         return None
     basis, used_cost = parts
@@ -135,7 +181,7 @@ def rollup_today_rows(
             float(row.get("cost") or 0),
             float(row.get("pay_amount") or 0),
             row.get("pay_roi"),
-            row.get("settle_amount"),
+            row.get("refund_rate_1h"),
         )
         if parts is not None:
             basis, used_cost = parts
@@ -335,7 +381,9 @@ async def _fetch_paged(
                     "settle_roi": (
                         _num(settle_roi_cell) if settle_roi_cell not in (None, "") else None
                     ),
-                    "refund_rate_1h": _norm_rate(mets.get("total_refund_order_gmv_for_roi2_1h_rate")),
+                    "refund_rate_1h": _norm_rate(
+                        _cell_value(mets.get("total_refund_order_gmv_for_roi2_1h_rate"))
+                    ),
                     "order_count": int(_num(_cell_value(mets.get("total_pay_order_count_for_roi2")))),
                 }
             )
@@ -664,20 +712,21 @@ def stats_from_db(
     """历史区间日数据齐全时直接 SQL 聚合，零接口调用。未覆盖返回 None。"""
     if not _covered(db, advertiser_id, start, end):
         return None
+    account_rates = account_refund_rates(db, start, end, [advertiser_id])
     rows = db.execute(
         select(
+            QianchuanProductDaily.stat_date,
             QianchuanProductDaily.product_id,
-            func.sum(QianchuanProductDaily.cost),
-            func.sum(QianchuanProductDaily.pay_amount),
-            func.sum(QianchuanProductDaily.settle_amount),
-            func.sum(QianchuanProductDaily.order_count),
-        )
-        .where(
+            QianchuanProductDaily.cost,
+            QianchuanProductDaily.pay_amount,
+            QianchuanProductDaily.pay_roi,
+            QianchuanProductDaily.refund_rate_1h,
+            QianchuanProductDaily.order_count,
+        ).where(
             QianchuanProductDaily.advertiser_id == advertiser_id,
             QianchuanProductDaily.stat_date >= start,
             QianchuanProductDaily.stat_date <= end,
         )
-        .group_by(QianchuanProductDaily.product_id)
     ).all()
     names = {
         int(p.product_id): p.product_name
@@ -688,22 +737,28 @@ def stats_from_db(
     products: dict[int, dict[str, Any]] = {}
     profit = 0.0
     cost_total = 0.0
-    for pid, cost, pay, settle, orders in rows:
+    for stat_date, pid, cost, pay, roi, refund_rate, orders in rows:
         cost = float(cost or 0)
         pay = float(pay or 0)
-        settle_val = float(settle) if settle is not None else None
-        # 日表没有 roi 列合计，用 GMV/消耗还原整体 ROI。
-        roi = pay / cost if cost > 0 and pay else None
+        roi_v = float(roi) if roi is not None else None
+        refund_v = refund_for_product_row(refund_rate, advertiser_id, stat_date, account_rates)
         pct = commission_map.get(int(pid), DEFAULT_COMMISSION_PCT)
-        value = product_profit(cost, pay, roi, settle_val, pct)
+        value = product_profit(cost, pay, roi_v, refund_v, pct)
         if value is not None:
             profit += value
         cost_total += cost
-        products[int(pid)] = {
-            "name": display_name(int(pid), names.get(int(pid))),
-            "cost": round(cost, 2),
-            "sales": int(orders or 0),
-        }
+        agg = products.setdefault(
+            int(pid),
+            {
+                "name": display_name(int(pid), names.get(int(pid))),
+                "cost": 0.0,
+                "sales": 0,
+            },
+        )
+        agg["cost"] += cost
+        agg["sales"] += int(orders or 0)
+    for item in products.values():
+        item["cost"] = round(item["cost"], 2)
     return {
         "profit": round(profit, 2),
         "plan_cost": round(cost_total, 2),
@@ -728,7 +783,7 @@ def aggregate_products(
             float(row["cost"]),
             float(row["pay_amount"]),
             row["pay_roi"],
-            row["settle_amount"],
+            row.get("refund_rate_1h"),
             pct,
         )
         if value is not None:
@@ -762,14 +817,16 @@ def profit_by_day(
     if not advertiser_ids:
         return {}
     commissions = product_commissions(db) if commission_map is None else commission_map
+    account_rates = account_refund_rates(db, start, end, advertiser_ids)
     rows = db.execute(
         select(
             QianchuanProductDaily.stat_date,
+            QianchuanProductDaily.advertiser_id,
             QianchuanProductDaily.product_id,
             QianchuanProductDaily.cost,
             QianchuanProductDaily.pay_amount,
             QianchuanProductDaily.pay_roi,
-            QianchuanProductDaily.settle_amount,
+            QianchuanProductDaily.refund_rate_1h,
         ).where(
             QianchuanProductDaily.advertiser_id.in_(advertiser_ids),
             QianchuanProductDaily.stat_date >= start,
@@ -777,16 +834,16 @@ def profit_by_day(
         )
     ).all()
     bag: dict[str, float] = defaultdict(float)
-    for stat_date, pid, cost, pay, roi, settle in rows:
+    for stat_date, adv_id, pid, cost, pay, roi, refund_rate in rows:
         cost_f = float(cost or 0)
         pay_f = float(pay or 0)
-        settle_v = float(settle) if settle is not None else None
         roi_v = float(roi) if roi is not None else None
+        refund_v = refund_for_product_row(refund_rate, int(adv_id), stat_date, account_rates)
         value = product_profit(
             cost_f,
             pay_f,
             roi_v,
-            settle_v,
+            refund_v,
             resolve_commission_pct(commissions, int(pid)),
         )
         if value is None:
@@ -799,31 +856,32 @@ def profit_by_day(
 def profits_by_advertiser(db: Session, start: str, end: str) -> dict[int, float]:
     """按店铺把区间内各商品利润加总。只读日表，不打接口。佣金空或 0 按 60%。"""
     commission_map = product_commissions(db)
+    account_rates = account_refund_rates(db, start, end)
     rows = db.execute(
         select(
             QianchuanProductDaily.advertiser_id,
+            QianchuanProductDaily.stat_date,
             QianchuanProductDaily.product_id,
-            func.sum(QianchuanProductDaily.cost),
-            func.sum(QianchuanProductDaily.pay_amount),
-            func.sum(QianchuanProductDaily.settle_amount),
-        )
-        .where(
+            QianchuanProductDaily.cost,
+            QianchuanProductDaily.pay_amount,
+            QianchuanProductDaily.pay_roi,
+            QianchuanProductDaily.refund_rate_1h,
+        ).where(
             QianchuanProductDaily.stat_date >= start,
             QianchuanProductDaily.stat_date <= end,
         )
-        .group_by(QianchuanProductDaily.advertiser_id, QianchuanProductDaily.product_id)
     ).all()
     bag: dict[int, float] = {}
-    for adv, pid, cost, pay, settle in rows:
+    for adv, stat_date, pid, cost, pay, roi, refund_rate in rows:
         cost_f = float(cost or 0)
         pay_f = float(pay or 0)
-        settle_v = float(settle) if settle is not None else None
-        roi = pay_f / cost_f if cost_f > 0 and pay_f else None
+        roi_v = float(roi) if roi is not None else None
+        refund_v = refund_for_product_row(refund_rate, int(adv), stat_date, account_rates)
         value = product_profit(
             cost_f,
             pay_f,
-            roi,
-            settle_v,
+            roi_v,
+            refund_v,
             resolve_commission_pct(commission_map, int(pid)),
         )
         if value is None:

@@ -83,7 +83,7 @@
           </div>
           <button class="btn" type="button" id="btn-reset-filter">重置筛选</button>
         </div>
-        <p class="hint" id="profit-hint">利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。今天是该店铺各条计划的利润相加，和计划页同一笔算法，没填佣金的计划不计入。10月1日之前没有商品日数据。</p>
+        <p class="hint" id="profit-hint">利润 = 消耗 × 支付ROI × (1 − 1小时退货率 − 5%) × 佣金 − 消耗。某一天用这个账户当天的 1 小时退货率；选一段时间就按天算完再相加。今天如果计划缓存里已有各条计划，就改用每条计划自己的退货率相加，没填佣金的计划不计入。列表上的退货率是工作台这一段时间的账户退货率，显示时已加 5%。</p>
         <div class="table-wrap">
           <table id="adv-table">
             <thead>
@@ -122,6 +122,6 @@
 <script src="/static/js/common.js?v=20261103u"></script>
 <script src="/static/js/partials.js?v=20261103u"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/advertisers.js?v=20261104d"></script>
+<script src="/static/js/advertisers.js?v=20261104e"></script>
 </body>
 </html>

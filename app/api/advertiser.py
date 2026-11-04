@@ -25,7 +25,7 @@ def _stamp(data: dict, username: str) -> dict:
 
 
 async def _attach_profits(db: Session, data: dict) -> dict:
-    """利润不进工作台缓存。今天优先用该账户计划缓存相加，历史读商品日表。"""
+    """利润不进工作台缓存。今天优先用该账户每条计划自己的退货率相加；昨天及以前用账户当天的 1 小时退货率，按天算完再相加。"""
     start = data.get("start_date") or date.today().isoformat()
     end = data.get("end_date") or start
     profits, note = await overview_service.shop_profits(db, start, end)

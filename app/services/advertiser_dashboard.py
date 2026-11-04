@@ -25,6 +25,7 @@ _PERSON_RE = re.compile(r"\(([^()]*)\)")
 _load_lock = asyncio.Lock()
 _load_tasks: dict[str, asyncio.Task] = {}
 _load_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_roi2_totals: dict[str, dict[str, Any]] = {}
 _LOAD_CACHE_SECONDS = 15
 
 
@@ -80,17 +81,17 @@ def people_from_accounts(accounts: list[dict[str, Any]]) -> list[str]:
 ProgressCb = Callable[[int, int, str], Awaitable[None]] | None
 
 
-async def _fetch_accounts(start: str, end: str) -> list[dict[str, Any]]:
+async def _fetch_accounts(start: str, end: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     async with workbench_session.fetch_lock:
         return await _fetch_accounts_locked(start, end)
 
 
-async def _fetch_accounts_locked(start: str, end: str) -> list[dict[str, Any]]:
+async def _fetch_accounts_locked(start: str, end: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     db = SessionLocal()
     row = None
     try:
         row = workbench_session.require_session(db)
-        accounts, cookie, csrf = await fetch_product_accounts(
+        accounts, total, cookie, csrf = await fetch_product_accounts(
             ebpid=int(row.ebpid),
             cookie=row.cookie,
             csrf=row.csrf_token or "",
@@ -98,7 +99,7 @@ async def _fetch_accounts_locked(start: str, end: str) -> list[dict[str, Any]]:
             end_date=end,
         )
         workbench_session.mark_ok(db, row, cookie, csrf)
-        return accounts
+        return accounts, total or {}
     except Exception as exc:
         if row is not None and not isinstance(exc, AppError):
             workbench_session.mark_fail(db, row, str(exc))
@@ -107,6 +108,43 @@ async def _fetch_accounts_locked(start: str, end: str) -> list[dict[str, Any]]:
         raise
     finally:
         db.close()
+
+
+def take_roi2_total(start: str, end: str) -> dict[str, Any] | None:
+    """最近一次拉这个区间时，工作台返回的原站合计。"""
+    found = _roi2_totals.get(f"{start}|{end}")
+    return dict(found) if found else None
+
+
+async def fetch_roi2_total(
+    start: str, end: str, advertiser_ids: list[int] | None = None
+) -> dict[str, Any]:
+    """只取原站这一段的合计。一页就够，合计不随分页变。"""
+    async with workbench_session.fetch_lock:
+        db = SessionLocal()
+        row = None
+        try:
+            row = workbench_session.require_session(db)
+            _accounts, total, cookie, csrf = await fetch_product_accounts(
+                ebpid=int(row.ebpid),
+                cookie=row.cookie,
+                csrf=row.csrf_token or "",
+                start_date=start,
+                end_date=end,
+                page_size=1,
+                max_pages=1,
+                advertiser_ids=advertiser_ids,
+            )
+            workbench_session.mark_ok(db, row, cookie, csrf)
+            return total or {}
+        except Exception as exc:
+            if row is not None and not isinstance(exc, AppError):
+                workbench_session.mark_fail(db, row, str(exc))
+            elif row is not None and isinstance(exc, AppError) and exc.code != 40421:
+                workbench_session.mark_fail(db, row, exc.msg)
+            raise
+        finally:
+            db.close()
 
 
 async def load_roi2_accounts(start: str, end: str) -> list[dict[str, Any]]:
@@ -127,13 +165,16 @@ async def load_roi2_accounts(start: str, end: str) -> list[dict[str, Any]]:
             _load_tasks[key] = task
 
     try:
-        rows = await task
+        rows, total = await task
     finally:
         async with _load_lock:
             if task.done() and not task.cancelled() and task.exception() is None:
-                _load_cache[key] = (time.monotonic(), list(task.result()))
+                done_rows, done_total = task.result()
+                _load_cache[key] = (time.monotonic(), list(done_rows))
+                _roi2_totals[key] = dict(done_total or {})
             if _load_tasks.get(key) is task and task.done():
                 _load_tasks.pop(key, None)
+    _roi2_totals[key] = dict(total or {})
     return list(rows)
 
 
@@ -149,6 +190,20 @@ def weighted_pay_roi(items: list[dict[str, Any]]) -> float | None:
         total_cost += cost
         weighted += cost * float(roi)
     return round(weighted / total_cost, 4) if total_cost > 0 else None
+
+
+def weighted_refund_rate(items: list[dict[str, Any]]) -> float | None:
+    """1 小时退货率按支付金额加权。各账户退款金额相加，再除以支付金额。"""
+    total_pay = 0.0
+    weighted = 0.0
+    for item in items:
+        pay = float(item.get("pay_amount") or 0)
+        rate = item.get("refund_rate_1h")
+        if pay <= 0 or rate is None:
+            continue
+        total_pay += pay
+        weighted += pay * float(rate)
+    return round(weighted / total_pay, 6) if total_pay > 0 else None
 
 
 def weighted_settle_roi(items: list[dict[str, Any]]) -> float | None:

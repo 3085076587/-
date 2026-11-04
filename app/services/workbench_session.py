@@ -89,7 +89,7 @@ async def keepalive(db: Session) -> None:
             return
         today = datetime.now().strftime("%Y-%m-%d")
         try:
-            _accounts, cookie, csrf = await fetch_product_accounts(
+            _accounts, _total, cookie, csrf = await fetch_product_accounts(
                 ebpid=int(row.ebpid),
                 cookie=row.cookie,
                 csrf=row.csrf_token or "",

@@ -6,7 +6,7 @@
   <title>数据总览 · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261104b">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261104c">
 </head>
 <body>
 <div class="layout">
@@ -42,9 +42,9 @@
           <button class="btn btn-primary" id="btn-query">查询</button>
           <button class="btn" id="btn-export">导出</button>
         </div>
-        <p class="hint">利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。昨天及以前，退款率按净成交推算，佣金按商品，空或 0 按 60%。今天的利润和计划页同一笔算法：每条计划单独算再相加，支付 ROI 为空按 0，没填佣金的计划不计入。</p>
-        <p class="hint">时间默认今天，也可选昨天、7天内、30天内。今天的消耗、支付、净成交读已发布的工作台缓存，利润读各账户计划。后台每 15 分钟按账户重拉，全部完成才整份替换；没完成时仍用上一份。看某一个账户的计划时，只重算这个账户，其他账户不变。日期范围如果包含今天，昨天及以前用日表，今天用计划，两段算完再相加。</p>
-        <p class="hint">总消耗、支付金额、净成交来自工作台账户表，和子账户页同一口径。总利润：昨天及以前是商品利润相加，今天是计划利润相加。总利润率 = 总利润 / 用户实际支付金额。</p>
+        <p class="hint">利润 = 消耗 × 支付ROI × (1 − 1小时退货率 − 5%) × 佣金 − 消耗。退货率用巨量返回的 1 小时退货率，显示时再加 5%。总利润和个人利润都是下面各账户利润相加，不拿平均退货率重算一遍。</p>
+        <p class="hint">某一天：商品自己有 1 小时退货率就用商品的；没有就用这个账户当天的 1 小时退货率。一段时间先按天算完，再把每天的利润相加。今天改用每条计划自己的 1 小时退货率，支付 ROI 为空按 0，没填佣金的计划不计入。昨天及以前佣金按商品，空或 0 按 60%。</p>
+        <p class="hint">顶部的 1 小时内退款率直接用工作台这一段时间的合计，和原站数据概览同一笔，显示时再加 5%。选一个人时，只取这个人账户的合计。这一段还没有合计时会重新拉一次。</p>
         <p class="hint" id="ov-meta">-</p>
       </div>
 
@@ -56,6 +56,7 @@
         <div class="stat-card"><div class="stat-num" id="kpi-pay-roi">-</div><div class="stat-label">整体支付 ROI</div></div>
         <div class="stat-card"><div class="stat-num" id="kpi-settle">-</div><div class="stat-label">净成交金额</div></div>
         <div class="stat-card"><div class="stat-num" id="kpi-settle-roi">-</div><div class="stat-label">净成交 ROI</div></div>
+        <div class="stat-card"><div class="stat-num" id="kpi-refund">-</div><div class="stat-label">1小时内退款率 <span class="rate-extra">已加5%</span></div></div>
         <div class="stat-card"><div class="stat-num ov-blue" id="kpi-people">-</div><div class="stat-label">运营数</div></div>
       </div>
 
@@ -82,6 +83,6 @@
 <script src="/static/js/echarts.min.js"></script>
 <script src="/static/js/common.js?v=20261103u"></script>
 <script src="/static/js/partials.js?v=20261103u"></script>
-<script src="/static/js/overview.js?v=20261104b"></script>
+<script src="/static/js/overview.js?v=20261104d"></script>
 </body>
 </html>

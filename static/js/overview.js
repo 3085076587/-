@@ -62,6 +62,16 @@
     el("ov-end").value = span.end;
   }
 
+  function fmtRefund(value) {
+    if (value == null || value === "") return "-";
+    let n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return "-";
+    if (n > 1 && n <= 100) n /= 100;
+    if (n > 1) return "-";
+    n = Math.min(1, n + 0.05);
+    return `${(n * 100).toFixed(2)}%`;
+  }
+
   function money(v) {
     return Number(v || 0).toLocaleString("zh-CN", {
       minimumFractionDigits: 2,
@@ -214,6 +224,7 @@
     el("kpi-pay-roi").textContent = board.pay_roi == null ? "-" : Number(board.pay_roi).toFixed(2);
     el("kpi-settle").textContent = "¥" + money(board.settle_amount);
     el("kpi-settle-roi").textContent = board.settle_roi == null ? "-" : Number(board.settle_roi).toFixed(2);
+    el("kpi-refund").textContent = fmtRefund(board.refund_rate_1h);
     el("kpi-people").textContent = k.people_count ?? 0;
     const trend = summary.trend;
     if (trend && trend.length > 1) {

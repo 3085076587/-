@@ -34,6 +34,9 @@ class QianchuanOverviewDaily(Base):
     order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="整体成交订单数")
     pay_roi: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True, comment="整体支付ROI")
     settle_roi: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True, comment="净成交ROI")
+    refund_rate_1h: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 6), nullable=True, comment="1小时内退款率（0~1），原站合计"
+    )
     order_cost: Mapped[Decimal | None] = mapped_column(
         Numeric(16, 4), nullable=True, comment="整体成交订单成本（元）"
     )

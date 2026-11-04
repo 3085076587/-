@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any
@@ -17,13 +19,20 @@ from sqlalchemy.orm import Session
 from app.models.advertiser import QianchuanAdvertiser
 from app.models.qianchuan_account_daily import QianchuanAccountDaily
 from app.models.qianchuan_overview_daily import QianchuanOverviewDaily
+from app.core.redis_client import get_cache_redis
 from app.services.advertiser_dashboard import (
     _has_parentheses,
+    fetch_roi2_total,
     load_roi2_accounts,
     person_name,
+    take_roi2_total,
     weighted_pay_roi,
+    weighted_refund_rate,
     weighted_settle_roi,
 )
+
+logger = logging.getLogger("uvicorn.error")
+_REFUND_CACHE_SECONDS = 15 * 60
 
 ALL_PERSON = ""
 
@@ -49,7 +58,22 @@ def _finish(bucket: dict[str, float | int], items: list[dict[str, Any]] | None =
         "settle_amount": settle,
         "pay_roi": weighted_pay_roi(roi_items) if roi_items else None,
         "settle_roi": weighted_settle_roi(roi_items) if roi_items else None,
+        "refund_rate_1h": weighted_refund_rate(roi_items) if roi_items else None,
     }
+
+
+def _merge_refund_rate(parts: list[dict[str, Any]]) -> float | None:
+    """多天或多个人合并时，1 小时退货率按支付金额加权，不能把百分数直接相加。"""
+    total_pay = 0.0
+    weighted = 0.0
+    for part in parts:
+        pay = float(part.get("pay_amount") or 0)
+        rate = part.get("refund_rate_1h")
+        if pay <= 0 or rate is None:
+            continue
+        total_pay += pay
+        weighted += pay * float(rate)
+    return round(weighted / total_pay, 6) if total_pay > 0 else None
 
 
 def _weighted_from_parts(parts: list[dict[str, Any]]) -> tuple[float | None, float | None]:
@@ -119,7 +143,12 @@ def save_overview_day(db: Session, day: str, accounts: list[dict[str, Any]]) -> 
     rows = rollup_people(accounts)
     if not rows:
         rows = {ALL_PERSON: _finish(_blank(), [])}
+    official = take_roi2_total(day, day) or {}
+    official_rate = official.get("refund_rate_1h")
     for person, metrics in rows.items():
+        rate = metrics.get("refund_rate_1h")
+        if person == ALL_PERSON and official_rate is not None:
+            rate = official_rate
         stmt = mysql_insert(QianchuanOverviewDaily).values(
             stat_date=stat_date,
             person=person,
@@ -130,14 +159,19 @@ def save_overview_day(db: Session, day: str, accounts: list[dict[str, Any]]) -> 
             pay_roi=metrics["pay_roi"],
             settle_roi=metrics["settle_roi"],
             order_cost=None,
+            refund_rate_1h=rate,
         )
-        stmt = stmt.on_duplicate_key_update(
-            stat_cost=stmt.inserted.stat_cost,
-            pay_amount=stmt.inserted.pay_amount,
-            settle_amount=stmt.inserted.settle_amount,
-            pay_roi=stmt.inserted.pay_roi,
-            settle_roi=stmt.inserted.settle_roi,
-        )
+        updates = {
+            "stat_cost": stmt.inserted.stat_cost,
+            "pay_amount": stmt.inserted.pay_amount,
+            "settle_amount": stmt.inserted.settle_amount,
+            "pay_roi": stmt.inserted.pay_roi,
+            "settle_roi": stmt.inserted.settle_roi,
+        }
+        # 全部这一行的退货率只接受工作台合计。这次没拿到合计时，不要用各账户加权把原站的数盖掉。
+        if not (person == ALL_PERSON and official_rate is None):
+            updates["refund_rate_1h"] = stmt.inserted.refund_rate_1h
+        stmt = stmt.on_duplicate_key_update(**updates)
         db.execute(stmt)
     db.commit()
     return len(rows)
@@ -158,14 +192,17 @@ def _sum_rows(rows: list[QianchuanOverviewDaily]) -> dict[str, Any]:
         parts.append(
             {
                 "stat_cost": float(row.stat_cost or 0),
+                "pay_amount": float(row.pay_amount or 0),
                 "pay_roi": float(row.pay_roi) if row.pay_roi is not None else None,
                 "settle_roi": float(row.settle_roi) if row.settle_roi is not None else None,
+                "refund_rate_1h": float(row.refund_rate_1h) if row.refund_rate_1h is not None else None,
             }
         )
     out = _finish(bucket, [])
     pay_roi, settle_roi = _weighted_from_parts(parts)
     out["pay_roi"] = pay_roi
     out["settle_roi"] = settle_roi
+    out["refund_rate_1h"] = _merge_refund_rate(parts)
     return out
 
 
@@ -198,25 +235,29 @@ def _from_account_daily(db: Session, days: list[str], person: str | None) -> dic
             QianchuanAccountDaily.settle_amount,
             QianchuanAccountDaily.pay_roi,
             QianchuanAccountDaily.settle_roi,
+            QianchuanAccountDaily.refund_rate_1h,
         ).where(
             QianchuanAccountDaily.advertiser_id.in_(ids),
             QianchuanAccountDaily.stat_date.in_(stat_days),
         )
     ).all()
     items: list[dict[str, Any]] = []
-    for cost, pay, settle, pay_roi, settle_roi in rows:
+    for cost, pay, settle, pay_roi, settle_roi, refund_rate in rows:
         _add(bucket, {"stat_cost": cost, "pay_amount": pay, "settle_amount": settle})
         items.append(
             {
                 "stat_cost": float(cost or 0),
+                "pay_amount": float(pay or 0),
                 "pay_roi": float(pay_roi) if pay_roi is not None else None,
                 "settle_roi": float(settle_roi) if settle_roi is not None else None,
+                "refund_rate_1h": float(refund_rate) if refund_rate is not None else None,
             }
         )
     out = _finish(bucket, [])
     pay_roi, settle_roi = _weighted_from_parts(items)
     out["pay_roi"] = pay_roi
     out["settle_roi"] = settle_roi
+    out["refund_rate_1h"] = weighted_refund_rate(items)
     return out
 
 
@@ -254,6 +295,7 @@ def _finish_sum(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     pay_roi, settle_roi = _weighted_from_parts([left, right])
     out["pay_roi"] = pay_roi
     out["settle_roi"] = settle_roi
+    out["refund_rate_1h"] = _merge_refund_rate([left, right])
     return out
 
 
@@ -287,7 +329,59 @@ async def metrics_for_range(
         elif fetch_today:
             accounts = await load_roi2_accounts(today, today)
             total = _finish_sum(total, rollup_accounts(accounts, person))
+    stored_rate = total.get("refund_rate_1h")
+    official = await official_refund_rate(db, start, end, person)
+    total["refund_rate_1h"] = official if official is not None else stored_rate
     return total
+
+
+def _store_refund_rate(db: Session, day: str, person: str, rate: float) -> None:
+    """把原站合计退货率写回这一天。没有这一行就不新建。"""
+    stat_date = date.fromisoformat(day)
+    row = db.scalar(
+        select(QianchuanOverviewDaily).where(
+            QianchuanOverviewDaily.stat_date == stat_date,
+            QianchuanOverviewDaily.person == person,
+        )
+    )
+    if row is None:
+        return
+    row.refund_rate_1h = rate
+    db.commit()
+
+
+async def official_refund_rate(db: Session, start: str, end: str, person: str | None) -> float | None:
+    """这一段的 1 小时退货率直接用工作台合计。15 分钟内同一段不重复拉。失败时返回 None。"""
+    person_key = person or ALL_PERSON
+    cache_key = f"ad_helper:roi2_total:v1:{start}:{end}:{person_key}"
+    try:
+        raw = await get_cache_redis().get(cache_key)
+        if raw:
+            data = json.loads(raw)
+            if data.get("refund_rate_1h") is not None:
+                return float(data["refund_rate_1h"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读原站退货率缓存失败：%s", exc)
+    ids = _advertiser_ids(db, person) if person else None
+    if person and not ids:
+        return None
+    try:
+        total = await fetch_roi2_total(start, end, ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("按原站重拉 %s~%s 退货率失败：%s", start, end, exc)
+        return None
+    rate = total.get("refund_rate_1h")
+    try:
+        await get_cache_redis().set(
+            cache_key,
+            json.dumps({"refund_rate_1h": rate}),
+            ex=_REFUND_CACHE_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写原站退货率缓存失败：%s", exc)
+    if start == end and rate is not None:
+        _store_refund_rate(db, start, person_key, float(rate))
+    return None if rate is None else float(rate)
 
 
 def with_profit_rate(metrics: dict[str, Any], profit: float) -> dict[str, Any]:
