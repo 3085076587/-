@@ -3,6 +3,7 @@
   globalThis.__qcFangzhouLoaded = true;
   const ROI_KEY = "qc_breakeven_roi_v1";
   const POS_KEY = "qc_panel_pos_v1";
+  const SHOW_KEY = "qc_show_metrics_v1";
   const PANEL_ID = "qc-fangzhou-panel";
   let roiMap = {};
   let timer = 0;
@@ -48,18 +49,42 @@
         header.removeEventListener("pointermove", move);
         header.removeEventListener("pointerup", up);
         panelPos = { left: parseFloat(panel.style.left), top: parseFloat(panel.style.top) };
-        chrome.storage.local.set({ [POS_KEY]: panelPos });
+        storageSet({ [POS_KEY]: panelPos });
       };
       header.setPointerCapture(event.pointerId);
       header.addEventListener("pointermove", move);
       header.addEventListener("pointerup", up);
     });
   }
+  function storageAlive() {
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function storageSet(data) {
+    if (!storageAlive()) return;
+    try {
+      chrome.storage.local.set(data);
+    } catch (error) {}
+  }
+
   function loadRoi() {
-    chrome.storage.local.get([ROI_KEY, POS_KEY], (data) => {
+    if (!storageAlive()) {
+      watchTable();
+      return;
+    }
+    chrome.storage.local.get([ROI_KEY, POS_KEY, SHOW_KEY], (data) => {
+      if (!storageAlive()) return;
       roiMap = (data && data[ROI_KEY]) || {};
       const pos = data && data[POS_KEY];
       if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) panelPos = pos;
+      const shown = data && data[SHOW_KEY];
+      if (shown && typeof shown === "object") {
+        showMetrics = { gmv: !!shown.gmv, margin: !!shown.margin, roi: !!shown.roi };
+      }
       placePanel(document.getElementById(PANEL_ID));
       watchTable();
     });
@@ -76,7 +101,7 @@
     current[field] = String(value ?? "").trim();
     if (!current.commission && !current.refund) delete roiMap[planId];
     else roiMap[planId] = current;
-    chrome.storage.local.set({ [ROI_KEY]: roiMap });
+    storageSet({ [ROI_KEY]: roiMap });
     pagePlans.forEach((plan) => {
       if (plan.id !== planId) return;
       plan.saved = { commission: current.commission || "", refund: current.refund || "" };
@@ -418,6 +443,7 @@
 
   let pagePlans = [];
   let panelPos = null;
+  let showMetrics = { gmv: false, margin: false, roi: false };
 
   function moneyOf(cell) {
     if (!cell) return null;
@@ -457,7 +483,11 @@
         const heads = [...tr.querySelectorAll("th, td")];
         const idxCost = heads.findIndex((cell) => headerText(cell).includes("整体消耗"));
         const idxSettle = heads.findIndex((cell) => headerText(cell).includes("净成交金额"));
-        if (idxCost >= 0 && idxSettle >= 0) found = { table: tr.closest("table"), heads, idxCost, idxSettle };
+        const idxTarget = heads.findIndex((cell) => {
+          const text = headerText(cell);
+          return text.includes("目标ROI") || text.includes("ROI目标");
+        });
+        if (idxCost >= 0 && idxSettle >= 0) found = { table: tr.closest("table"), heads, idxCost, idxSettle, idxTarget };
       });
     });
     return found;
@@ -523,14 +553,25 @@
     return cell.parentElement;
   }
 
+  function nameIn(text) {
+    const flat = String(text || "").replace(/\s+/g, "");
+    const before = flat.split(/ID[:：]/)[0].split(/利润¥|预计成交GMV|货品毛利|预计ROI/)[0];
+    if (!before || before === "首页") return "";
+    const patterns = [
+      /\d{1,2}月\d{1,2}日.{0,48}?保本(?:（[^）]*）|\([^)]*\))?/,
+      /\d{1,2}[.．]\d{1,2}[\u4e00-\u9fa5][\u4e00-\u9fa5A-Za-z0-9.]{0,40}?保本(?:（[^）]*）|\([^)]*\))?/,
+      /\d{1,2}月\d{1,2}日[\u4e00-\u9fa5A-Za-z0-9.]{0,40}/,
+      /[\u4e00-\u9fa5][\u4e00-\u9fa5A-Za-z0-9.]{1,48}保本(?:（[^）]*）|\([^)]*\))?/,
+    ];
+    for (const pattern of patterns) {
+      const hit = before.match(pattern);
+      if (hit) return hit[0];
+    }
+    return "";
+  }
+
   function titleOf(text) {
-    const named = planTitle(text);
-    if (named) return named;
-    const flat = String(text || "").replace(/\s+/g, " ");
-    const hit = flat.match(/\d{1,2}月\d{1,2}日.{0,48}?保本(?:（[^）]*）|\([^)]*\))?/);
-    if (hit) return hit[0].trim();
-    const day = flat.match(/\d{1,2}月\d{1,2}日\S{0,40}/);
-    return day ? day[0].trim() : "";
+    return nameIn(text) || planTitle(text);
   }
 
   function cellFor(kids, index, headCount) {
@@ -540,7 +581,7 @@
     return kids[index] || null;
   }
 
-  function buildPlan(row, costCell, settleCell, index) {
+  function buildPlan(row, costCell, settleCell, index, targetCell) {
     const text = row ? row.textContent || "" : "";
     const idMatch = text.match(/ID[:：]\s*(\d{8,})/);
     const id = idMatch ? idMatch[1] : `row-${index + 1}`;
@@ -551,6 +592,7 @@
       text,
       cost: moneyOf(costCell),
       settle: moneyOf(settleCell),
+      targetRoi: moneyOf(targetCell),
       cell: costCell || row,
       saved,
       refund: parseRefund(saved.refund),
@@ -574,7 +616,7 @@
     const rows = aligned.length ? aligned : bodyRows;
     return rows.map((tr, index) => {
       const tds = directCells(tr);
-      return buildPlan(tr, tds[header.idxCost], tds[header.idxSettle], index);
+      return buildPlan(tr, tds[header.idxCost], tds[header.idxSettle], index, header.idxTarget >= 0 ? tds[header.idxTarget] : null);
     });
   }
 
@@ -584,6 +626,13 @@
       const row = rowBox(cell, scope);
       if (row && !settleByRow.has(row)) settleByRow.set(row, cell);
     });
+    const targetByRow = new Map();
+    if (header.idxTarget >= 0) {
+      markedCells(roots, header.heads[header.idxTarget]).forEach((cell) => {
+        const row = rowBox(cell, scope);
+        if (row && !targetByRow.has(row)) targetByRow.set(row, cell);
+      });
+    }
     const plans = [];
     const seen = new Set();
     markedCells(roots, header.heads[header.idxCost]).forEach((costCell) => {
@@ -592,7 +641,7 @@
       const settleCell = settleByRow.get(row);
       if (!settleCell) return;
       seen.add(row);
-      plans.push(buildPlan(row, costCell, settleCell, plans.length));
+      plans.push(buildPlan(row, costCell, settleCell, plans.length, targetByRow.get(row) || null));
     });
     return plans;
   }
@@ -625,45 +674,98 @@
       const hit = (list) => list.filter(({ kids }) => moneyOf(cellFor(kids, header.idxCost, headCount)) != null || moneyOf(cellFor(kids, header.idxSettle, headCount)) != null).length;
       return hit(b) - hit(a) || b.length - a.length;
     });
-    return (ranked[0] || []).map(({ el, kids }, index) => buildPlan(el, cellFor(kids, header.idxCost, headCount), cellFor(kids, header.idxSettle, headCount), index));
+    return (ranked[0] || []).map(({ el, kids }, index) => buildPlan(
+      el,
+      cellFor(kids, header.idxCost, headCount),
+      cellFor(kids, header.idxSettle, headCount),
+      index,
+      header.idxTarget >= 0 ? cellFor(kids, header.idxTarget, headCount) : null
+    ));
   }
 
-  function badgeHost(root) {
-    const nodes = root.querySelectorAll("div, span, p");
-    for (let i = 0; i < nodes.length; i += 1) {
-      const text = (nodes[i].textContent || "").replace(/\s+/g, "");
-      if (/^ID[:：]\d{8,}$/.test(text)) return nodes[i];
-    }
-    let best = null;
-    nodes.forEach((node) => {
-      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
-      if (text.length > 180 || text.length < 8) return;
-      if (!/ID[:：]\s*\d{8,}/.test(text) || !/保本|\d{1,2}月\d{1,2}日/.test(text)) return;
-      if (!best || text.length < best.text.length) best = { node, text };
+  function cleanTitle(text) {
+    const line = String(text || "").replace(/\s+/g, " ").trim();
+    if (!line || line.length > 80 || line.length < 2) return "";
+    if (/^ID[:：]/.test(line) || /^\d+(?:\.\d+)?$/.test(line)) return "";
+    if (/^(首页|商品|素材|投放中|编辑|诊断|更多|升级乘方|已暂停|学习期|审核中)$/.test(line)) return "";
+    if (/^(利润|预计成交GMV|货品毛利|预计ROI|整体消耗|净成交)/.test(line)) return "";
+    return line;
+  }
+
+  function titleFromElement(el) {
+    if (!el || el.nodeType !== 1 || typeof el.querySelectorAll !== "function") return "";
+    if (el.querySelector("img")) return "";
+    if (el.classList && (el.classList.contains("qc-profit-badge") || el.classList.contains("qc-profit-col"))) return "";
+    const own = cleanTitle([...el.childNodes].filter((item) => item.nodeType === 3).map((item) => item.nodeValue).join(""));
+    if (own) return own;
+    const whole = cleanTitle(el.textContent);
+    if (whole) return whole;
+    let best = "";
+    el.querySelectorAll("div, span, p").forEach((node) => {
+      if (node.classList && node.classList.contains("qc-profit-badge")) return;
+      const text = cleanTitle([...node.childNodes].filter((item) => item.nodeType === 3).map((item) => item.nodeValue).join(""));
+      if (text && text.length > best.length) best = text;
     });
-    return best ? best.node : root;
+    return best;
   }
 
-  function attachNames(plans, scope) {
-    const hits = [];
-    const nodes = scope.querySelectorAll("div, tr");
-    const cap = Math.min(nodes.length, 2000);
-    for (let i = 0; i < cap && hits.length < plans.length; i += 1) {
-      const el = nodes[i];
-      if (el.closest(`thead, #${PANEL_ID}`)) continue;
-      const text = el.textContent || "";
-      if (text.length > 500 || text.length < 8) continue;
-      if ((text.match(/ID[:：]\s*\d{8,}/g) || []).length !== 1) continue;
-      if (hits.some((item) => item.contains(el))) continue;
-      hits.push(el);
+  function nameAbove(idNode) {
+    if (!idNode) return "";
+    let prev = idNode.previousElementSibling;
+    for (let guard = 0; prev && guard < 4; guard += 1) {
+      const title = titleFromElement(prev);
+      if (title) return title;
+      prev = prev.previousElementSibling;
     }
-    if (hits.length !== plans.length) return plans;
-    return plans.map((plan, index) => {
-      const text = `${hits[index].textContent || ""}\n${plan.text || ""}`;
-      const idMatch = text.match(/ID[:：]\s*(\d{8,})/);
-      const id = idMatch ? idMatch[1] : plan.id;
-      const saved = recordOf(id);
-      return { ...plan, id, title: titleOf(text) || plan.title, text, cell: badgeHost(hits[index]), saved, refund: parseRefund(saved.refund) };
+    let node = idNode.parentElement;
+    for (let depth = 0; depth < 3 && node; depth += 1) {
+      const chunks = [];
+      [...node.childNodes].some((child) => {
+        if (child === idNode || (child.contains && child.contains(idNode))) return true;
+        const title = child.nodeType === 3 ? cleanTitle(child.nodeValue) : titleFromElement(child);
+        if (title) chunks.push(title);
+        return false;
+      });
+      if (chunks.length) return chunks[chunks.length - 1];
+      let sibling = node.previousElementSibling;
+      for (let inner = 0; sibling && inner < 3; inner += 1) {
+        const title = titleFromElement(sibling);
+        if (title) return title;
+        sibling = sibling.previousElementSibling;
+      }
+      if (node.querySelector("img") || (node.textContent || "").length > 500) break;
+      node = node.parentElement;
+    }
+    return "";
+  }
+
+  function badgeHostFor(id) {
+    if (!id || String(id).startsWith("row-")) return null;
+    const nodes = document.querySelectorAll("div, span, p");
+    const cap = Math.min(nodes.length, 8000);
+    let best = null;
+    for (let i = 0; i < cap; i += 1) {
+      const node = nodes[i];
+      if (node.closest(`thead, #${PANEL_ID}, .qc-profit-badge`)) continue;
+      const flat = (node.textContent || "").replace(/\s+/g, "");
+      if (flat === `ID：${id}` || flat === `ID:${id}`) return node;
+      if (!flat.includes(String(id))) continue;
+      if ((node.textContent.match(/ID[:：]\s*\d{8,}/g) || []).length !== 1) continue;
+      if (flat.length > 420) continue;
+      if (/整体消耗|编辑|诊断/.test(node.textContent || "")) continue;
+      if (!/保本|\d{1,2}月\d{1,2}日/.test(node.textContent || "")) continue;
+      if (!best || flat.length < best.length) best = { node, length: flat.length };
+    }
+    return best ? best.node : null;
+  }
+
+  function attachNames(plans) {
+    return plans.map((plan) => {
+      const host = badgeHostFor(plan.id);
+      if (!host) return plan;
+      const title = nameAbove(host) || nameIn(host.textContent || "") || plan.title;
+      const text = `${host.textContent || ""}\n${plan.text || ""}`;
+      return { ...plan, title: title || plan.title, text, cell: host };
     });
   }
 
@@ -684,7 +786,7 @@
       source = "div行";
       plans = usable(readDivRows(roots, header));
     }
-    if (plans.length) plans = attachNames(plans, scope);
+    if (plans.length) plans = attachNames(plans);
     if (!plans.length) {
       reportRead(`表头已找到：整体消耗是第 ${header.idxCost} 列，净成交金额是第 ${header.idxSettle} 列，共 ${header.heads.length} 列。tbody 是空的，表头外层的 div 行也没有对上这两列。`, [], { header, scope, source });
       return [];
@@ -731,23 +833,53 @@
     console.groupEnd();
   }
 
-  function placeBadge(idNode, badge) {
-    let column = idNode;
+  function findNameEl(idNode) {
     let node = idNode;
-    for (let depth = 0; depth < 8 && node.parentElement && node.parentElement !== document.body; depth += 1) {
-      const parent = node.parentElement;
-      if (parent.closest(`#${PANEL_ID}, thead`)) break;
-      const text = parent.textContent || "";
-      if (text.length > 500) break;
+    for (let depth = 0; depth < 8 && node && node !== document.body; depth += 1) {
+      const scope = node.parentElement;
+      if (!scope || scope.closest(`#${PANEL_ID}, thead`)) break;
+      const text = scope.textContent || "";
+      if (text.length > 800) break;
       if ((text.match(/ID[:：]\s*\d{8,}/g) || []).length > 1) break;
-      if (parent.querySelector("img")) break;
-      if (/保本|\d{1,2}月\d{1,2}日/.test(text)) column = parent;
-      node = parent;
+      const list = scope.querySelectorAll("div, span, p");
+      for (let i = 0; i < list.length; i += 1) {
+        const el = list[i];
+        if (el.closest(".qc-profit-badge")) continue;
+        if (el.querySelector("img, .qc-profit-badge")) continue;
+        const line = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (!line || line.length > 90 || /^ID[:：]/.test(line)) continue;
+        if (/保本/.test(line) || /\d{1,2}月\d{1,2}日/.test(line)) return el;
+      }
+      node = scope;
     }
-    if (badge.parentElement !== column) column.appendChild(badge);
-    const display = getComputedStyle(column).display;
-    const direction = getComputedStyle(column).flexDirection;
-    if (display.includes("flex") && direction.indexOf("column") !== 0) column.style.flexWrap = "wrap";
+    return null;
+  }
+
+  function placeBadge(idNode, badge) {
+    const nameEl = findNameEl(idNode);
+    const host = nameEl && nameEl.parentElement ? nameEl.parentElement : idNode.parentElement;
+    if (!host || host.closest(`#${PANEL_ID}, thead`)) return;
+    let before = null;
+    [...host.children].forEach((el) => {
+      if (before || el === badge || el === nameEl || el.contains(nameEl)) return;
+      if (el.querySelector && (el.querySelector("img") || el.querySelector("input[type=checkbox]"))) before = el;
+    });
+    if (!before) {
+      const idRow = [...host.children].find((el) => el !== badge && (el === idNode || el.contains(idNode)));
+      if (idRow) before = idRow.nextSibling;
+    }
+    if (before && before !== badge) host.insertBefore(badge, before);
+    else if (badge.parentElement !== host) host.appendChild(badge);
+    const display = getComputedStyle(host).display;
+    const direction = getComputedStyle(host).flexDirection || "";
+    if (display.includes("flex") && direction.indexOf("column") !== 0) host.style.flexWrap = "wrap";
+    badge.style.setProperty("margin", "2px 0 0 0", "important");
+    badge.style.setProperty("width", "100%", "important");
+    badge.style.setProperty("align-self", "stretch", "important");
+    badge.style.setProperty("flex", "0 0 100%", "important");
+    if (!nameEl) return;
+    const delta = Math.round(nameEl.getBoundingClientRect().left - badge.getBoundingClientRect().left);
+    if (delta && Math.abs(delta) < 200) badge.style.setProperty("margin-left", `${delta}px`, "important");
   }
 
   function yuan(value) {
@@ -766,7 +898,16 @@
     const extra = `${sourceHtml(plan)}${filled ? `<span class="qc-filled">${filled}</span>` : ""}`;
     const refund = plan.refund;
     const commission = commissionOf(plan.saved, plan.text);
-    const miss = (sub) => ({ money: "—", cls: "miss", sub, extra, profit: null, calculated: false, counted: false, pending: true });
+    const gmv = plan.settle == null || refund == null ? null : Math.round(plan.settle * (1 - refund) * 100) / 100;
+    const margin = gmv == null || commission == null ? null : Math.round(gmv * commission * 100) / 100;
+    const roi = margin == null || !plan.cost ? null : margin / plan.cost;
+    let targetRoi = plan.targetRoi;
+    if (targetRoi == null) {
+      const matched = String(plan.text || "").match(/ROI\s*目标\s*[:：]?\s*(\d+(?:\.\d+)?)|目标\s*ROI\s*[:：]?\s*(\d+(?:\.\d+)?)/);
+      if (matched) targetRoi = Number(matched[1] || matched[2]);
+    }
+    const withMetrics = (view) => ({ ...view, gmv, margin, roi, targetRoi });
+    const miss = (sub) => withMetrics({ money: "—", cls: "miss", sub, extra, profit: null, calculated: false, counted: false, pending: true });
     if (refund == null) return miss("实际退款率不正确");
     if (commission == null) return miss("缺少佣金");
     if (plan.settle == null || plan.cost == null) {
@@ -776,9 +917,23 @@
     const cents = Math.round(profit * 100);
     const shown = cents / 100;
     const rate = plan.settle ? `${cents > 0 ? "+" : ""}${((shown / plan.settle) * 100).toFixed(1)}%` : "保本";
-    if (cents > 0) return { money: moneyText(shown), cls: "pos", sub: rate, extra, profit: shown, calculated: true, counted: true, pending: false };
-    if (cents < 0) return { money: moneyText(shown), cls: "neg", sub: rate, extra, profit: shown, calculated: true, counted: true, pending: false };
-    return { money: "¥0.00", cls: "zero", sub: "保本", extra, profit: 0, calculated: true, counted: true, pending: false };
+    if (cents > 0) return withMetrics({ money: moneyText(shown), cls: "pos", sub: rate, extra, profit: shown, calculated: true, counted: true, pending: false });
+    if (cents < 0) return withMetrics({ money: moneyText(shown), cls: "neg", sub: rate, extra, profit: shown, calculated: true, counted: true, pending: false });
+    return withMetrics({ money: "¥0.00", cls: "zero", sub: "保本", extra, profit: 0, calculated: true, counted: true, pending: false });
+  }
+
+  function pageMetricHtml(view) {
+    const lines = [];
+    if (showMetrics.gmv && view.gmv != null) lines.push(`<span class="qc-metric gmv">预计成交GMV ${yuan(view.gmv)}</span>`);
+    if (showMetrics.margin && view.margin != null) {
+      const cls = view.margin > 0 ? "pos" : view.margin < 0 ? "neg" : "gmv";
+      lines.push(`<span class="qc-metric ${cls}">货品毛利 ${yuan(view.margin)}</span>`);
+    }
+    if (showMetrics.roi && view.roi != null) {
+      const low = view.targetRoi != null && view.roi < view.targetRoi;
+      lines.push(`<span class="qc-metric ${low ? "neg" : "roi"}">预计ROI ${view.roi.toFixed(2)}</span>`);
+    }
+    return lines.join("");
   }
 
   function profitHtml(view) {
@@ -820,7 +975,7 @@
       badge.dataset.plan = plan.id;
     }
     placeBadge(host, badge);
-    const html = `<b class="${view.cls}">${view.profit == null ? view.sub : `利润${String(view.money).replace(/^\+/, "")}`}</b>`;
+    const html = `<b class="${view.cls}">${view.profit == null ? view.sub : `利润${String(view.money).replace(/^\+/, "")}`}</b>${pageMetricHtml(view)}`;
     if (badge.innerHTML !== html) badge.innerHTML = html;
     plan.mounted = badge;
   }
@@ -834,7 +989,7 @@
     if (!panel) {
       panel = document.createElement("aside");
       panel.id = PANEL_ID;
-      panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-refresh">刷新</button><button type="button" id="qc-fangzhou-close">关闭</button></span></header><div class="qc-formula">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗<br>整体消耗、净成交金额从表格读取。退款率需要填写，不填按 0。佣金从计划名称里的「佣金:xx%」提取，没有就在下方填写，填了以填写的为准。</div><div id="qc-fangzhou-total"></div><div id="qc-fangzhou-list"></div>`;
+      panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-refresh">刷新</button><button type="button" id="qc-fangzhou-close">关闭</button></span></header><div class="qc-formula">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗<br>预计成交GMV = 净成交 × (1 − 退款率)。货品毛利 = 预计成交GMV × 佣金率。预计ROI = 货品毛利 ÷ 整体消耗。<br>整体消耗、净成交金额从表格读取。退款率需要填写，不填按 0。佣金从计划名称里的「佣金:xx%」提取，没有就在下方填写，填了以填写的为准。</div><div class="qc-show"><label><input type="checkbox" data-show="gmv">预计成交GMV</label><label><input type="checkbox" data-show="margin">货品毛利</label><label><input type="checkbox" data-show="roi">预计ROI</label></div><div id="qc-fangzhou-total"></div><div id="qc-fangzhou-list"></div>`;
       document.documentElement.appendChild(panel);
       placePanel(panel);
       enableDrag(panel);
@@ -845,6 +1000,13 @@
       panel.querySelector("#qc-fangzhou-refresh").addEventListener("click", () => {
         lastReport = "";
         pagePlans = readPlans();
+        paint();
+      });
+      panel.addEventListener("change", (event) => {
+        const box = event.target.closest("[data-show]");
+        if (!box) return;
+        showMetrics[box.dataset.show] = box.checked;
+        storageSet({ [SHOW_KEY]: showMetrics });
         paint();
       });
       panel.addEventListener("input", (event) => {
@@ -891,6 +1053,9 @@
     const pendingHtml = pending ? `<div><span>未算</span><b>${pending}</b></div>` : "";
     const summary = `<div class="qc-sum-main"><span>总预估利润</span><strong class="${sumCls}">${sumText}</strong></div><div class="qc-sum-split"><div><span class="pos">盈利</span><b class="pos">${win}</b></div><div><span>保本</span><b>${even}</b></div><div><span class="neg">亏损</span><b class="neg">${loss}</b></div>${pendingHtml}</div>`;
     if (totalNode.innerHTML !== summary) totalNode.innerHTML = summary;
+    panel.querySelectorAll("[data-show]").forEach((box) => {
+      box.checked = !!showMetrics[box.dataset.show];
+    });
     const list = panel.querySelector("#qc-fangzhou-list");
     if (document.activeElement && list.contains(document.activeElement)) {
       const lines = list.querySelectorAll(".qc-profit-line");
@@ -955,7 +1120,12 @@
     if (watchTable.timer) window.clearInterval(watchTable.timer);
     const read = () => {
       if (!onUniPage() || document.hidden) return;
-      pagePlans = readPlans();
+      try {
+        pagePlans = readPlans();
+      } catch (error) {
+        console.log("[千川方舟] 读取中断", error && error.message);
+        return;
+      }
       paint();
     };
     read();

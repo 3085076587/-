@@ -258,8 +258,12 @@
   writing-mode: horizontal-tb !important;
   text-orientation: mixed !important;
   letter-spacing: normal !important;
-  white-space: nowrap !important;
   box-sizing: border-box !important;
+}
+
+.qc-profit-col,
+.qc-profit-head {
+  white-space: nowrap !important;
 }
 
 .qc-profit-badge,
@@ -303,6 +307,9 @@
   display: block !important;
   writing-mode: horizontal-tb !important;
   white-space: nowrap !important;
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+  text-align: left !important;
 }
 
 .qc-profit-badge b {
@@ -321,17 +328,65 @@
   white-space: normal;
 }
 
+.qc-show {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 14px;
+  background: #f3f7fd;
+  border-bottom: 1px solid #d6e4ff;
+  color: #1d2129;
+  font-size: 12px;
+}
+
+.qc-show label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.qc-profit-badge .qc-metric {
+  display: block !important;
+  width: 100% !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1.4 !important;
+  color: #1677ff !important;
+  white-space: nowrap !important;
+}
+
+.qc-profit-badge .qc-metric.gmv {
+  color: #1677ff !important;
+}
+
+.qc-profit-badge .qc-metric.roi {
+  color: #722ed1 !important;
+}
+
+.qc-profit-badge .qc-metric.pos {
+  color: #00b42a !important;
+}
+
+.qc-profit-badge .qc-metric.neg {
+  color: #f53f3f !important;
+}
+
 .qc-profit-badge {
   display: flex !important;
-  flex-direction: row !important;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
   justify-content: flex-start !important;
-  align-items: center !important;
-  gap: 4px !important;
+  align-items: flex-start !important;
+  align-self: flex-start !important;
+  gap: 0 !important;
   width: 100% !important;
   max-width: 100% !important;
   flex: 0 0 100% !important;
   margin: 2px 0 0 !important;
+  overflow: visible !important;
   text-align: left !important;
+  white-space: normal !important;
 }
 
 .qc-profit-line {
