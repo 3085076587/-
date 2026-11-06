@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "千川方舟",
-  "version": "1.7.31",
+  "version": "1.7.32",
   "description": "进入千川全域投放商品计划页后填写实际退款率和佣金，预估利润直接显示在原站表格上。",
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [

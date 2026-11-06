@@ -1,7 +1,8 @@
 """数据总览：消耗来自工作台账户表。昨天及以前的利润来自商品日表。
 
-今天的利润按各账户计划相加。计划字段是消耗、支付 ROI、1 小时退款率、佣金。
-区间包含今天时，历史利润和今天的计划利润分开算完再相加。
+利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。
+佣金先用手填，没有再解析名称，都没有的商品不计入。
+今天用 Redis 里的计划净成交和消耗，历史用数据库里的商品日表。总利润是这些商品相加。
 
 商品数据优先读库（qianchuan_product_daily 覆盖整个区间时零接口调用），
 未覆盖再打商品接口（单账户一次请求）；聚合结果按人 + 日期区间缓存 Redis DB1。
@@ -27,6 +28,7 @@ from app.services import (
     account_report_service,
     daily_sync,
     overview_daily_service,
+    plan_commission_sync,
     product_report_service,
     today_plan_cache,
     token_store,
@@ -41,7 +43,7 @@ from app.services.dashboard_cache import get_progress, set_progress
 
 logger = logging.getLogger("uvicorn.error")
 
-CACHE_PREFIX = "ad_helper:overview:v4"
+CACHE_PREFIX = "ad_helper:overview:v6"
 TODAY_CACHE_PREFIX = "ad_helper:overview:today:v3"
 # 商品日表从这一天起才有数。更早的日期不算利润，只提示。
 PROFIT_FROM = date(2026, 10, 1)
@@ -95,6 +97,33 @@ def _person_advertisers(db: Session) -> dict[str, list[int]]:
             continue
         people[name].append(int(row.advertiser_id))
     return dict(people)
+
+
+def _people_scope(
+    db: Session,
+    people: list[str] | None,
+    allowed_ids: set[int] | None = None,
+) -> dict[str, list[int]]:
+    """按人和可见店铺收窄账户。额外授权的店并进当前这个人。"""
+    mapping = {name: list(ids) for name, ids in _person_advertisers(db).items()}
+    if people is not None:
+        allow_names = set(people)
+        mapping = {name: ids for name, ids in mapping.items() if name in allow_names}
+    if allowed_ids is None:
+        return mapping
+    allow = {int(item) for item in allowed_ids}
+    scoped: dict[str, list[int]] = {}
+    seen: set[int] = set()
+    for name, ids in mapping.items():
+        kept = [int(item) for item in ids if int(item) in allow]
+        seen.update(kept)
+        if kept:
+            scoped[name] = kept
+    extra = [item for item in allow if item not in seen]
+    if extra and people and len(people) == 1:
+        scoped.setdefault(people[0], [])
+        scoped[people[0]].extend(extra)
+    return scoped
 
 
 async def _heal_product_days(
@@ -162,6 +191,7 @@ async def _get_person_stats(
     gate: asyncio.Semaphore,
     commission_map: dict[int, float],
     tick=None,
+    name_commission: dict[tuple[int, int], float] | None = None,
 ) -> dict[str, Any]:
     """单人的商品聚合数据。同 key 并发只跑一次，后来者等锁后读缓存。
 
@@ -185,71 +215,21 @@ async def _get_person_stats(
                     return cached
 
             batch = product_report_service.person_aggregate_from_db(
-                db, advertiser_ids, start, end, commission_map
+                db, advertiser_ids, start, end, commission_map, name_commission
             )
-            if batch is not None:
-                data = {
-                    "person": person,
-                    "profit": batch["profit"],
-                    "plan_cost": batch["plan_cost"],
-                    "plan_count": batch["plan_count"],
-                    "products": batch["products"],
-                    "failed_advertisers": 0,
-                    "from_cache": False,
-                }
-                await _write_cache(key, data)
-                if tick is not None:
-                    await tick(max(1, len(advertiser_ids)), f"{person}：读库完成")
-                return data
-
-            async def run_one(adv_id: int) -> dict[str, Any]:
-                try:
-                    return await _fetch_advertiser_stats(
-                        db, client, adv_id, start, end, commission_map, gate
-                    )
-                finally:
-                    if tick is not None:
-                        await tick(1, f"{person}：账户 {adv_id} 完成")
-
-            results = await asyncio.gather(
-                *(run_one(adv_id) for adv_id in advertiser_ids),
-                return_exceptions=True,
-            )
-            profit = 0.0
-            plan_cost = 0.0
-            plan_count = 0
-            products: dict[int, dict[str, Any]] = defaultdict(
-                lambda: {"name": "无数据", "cost": 0.0, "sales": 0}
-            )
-            failed = 0
-            for res in results:
-                if isinstance(res, BaseException):
-                    failed += 1
-                    logger.warning("%s 账户商品数据拉取失败：%s", person, res)
-                    continue
-                profit += float(res["profit"])
-                plan_cost += float(res["plan_cost"])
-                plan_count += int(res["plan_count"])
-                for pid, val in res["products"].items():
-                    agg = products[int(pid)]
-                    agg["name"] = val.get("name") or agg["name"]
-                    agg["cost"] += float(val.get("cost") or 0)
-                    agg["sales"] += int(val.get("sales") or 0)
-            if advertiser_ids and failed == len(advertiser_ids):
-                raise AppError(f"{person} 的商品数据全部拉取失败", code=50230)
             data = {
                 "person": person,
-                "profit": round(profit, 2),
-                "plan_cost": round(plan_cost, 2),
-                "plan_count": plan_count,
-                "products": [
-                    {"pid": pid, "name": v["name"], "cost": round(v["cost"], 2), "sales": v["sales"]}
-                    for pid, v in products.items()
-                ],
-                "failed_advertisers": failed,
+                "profit": batch["profit"],
+                "plan_cost": batch["plan_cost"],
+                "plan_count": batch["plan_count"],
+                "products": batch["products"],
+                "failed_advertisers": 0,
                 "from_cache": False,
             }
-            await _write_cache(key, data)
+            if batch.get("complete"):
+                await _write_cache(key, data)
+            if tick is not None:
+                await tick(max(1, len(advertiser_ids)), f"{person}：读库完成")
             return data
     finally:
         _job_locks.pop(key, None)
@@ -319,9 +299,11 @@ def _person_trend(
     start: str,
     end: str,
     today_rows: list[dict[str, Any]] | None,
+    name_commission: dict[tuple[int, int], float] | None = None,
+    allowed_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """单人按天的消耗和利润。今天用实时快照，昨天及以前读日表。缺的日子补 0。"""
-    advertiser_ids = _person_advertisers(db).get(person) or []
+    advertiser_ids = _people_scope(db, [person], allowed_ids).get(person) or []
     today = date.today().isoformat()
     include_today = start <= today <= end
     history_end = (date.today() - timedelta(days=1)).isoformat() if include_today else end
@@ -329,7 +311,9 @@ def _person_trend(
     profits: dict[str, float] = {}
     if start <= history_end:
         costs = account_report_service.account_cost_by_day(db, advertiser_ids, start, history_end)
-        profits = product_report_service.profit_by_day(db, advertiser_ids, start, history_end)
+        profits = product_report_service.profit_by_day(
+            db, advertiser_ids, start, history_end, name_commission=name_commission
+        )
     if include_today:
         row = next((item for item in (today_rows or []) if item.get("name") == person), None)
         costs[today] = round(float(row["cost"]), 2) if row else 0.0
@@ -342,6 +326,70 @@ def _person_trend(
         }
         for day in _iter_days(start, end)
     ]
+
+
+def _scope_advertiser_ids(
+    db: Session,
+    people: list[str] | None,
+    allowed_ids: set[int] | None = None,
+) -> list[int]:
+    ids: list[int] = []
+    for group in _people_scope(db, people, allowed_ids).values():
+        ids.extend(int(item) for item in group)
+    return ids
+
+
+def _daily_trend(
+    db: Session,
+    start: str,
+    end: str,
+    people: list[str] | None,
+    today_rows: list[dict[str, Any]] | None,
+    today_board: dict[str, Any] | None,
+    name_commission: dict[tuple[int, int], float] | None,
+    allowed_ids: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """区间内每一天的汇总。金额来自账户日表，预估利润按当天商品相加。今天用已发布的工作台和商品利润。"""
+    today = date.today().isoformat()
+    include_today = start <= today <= end
+    history_end = (date.today() - timedelta(days=1)).isoformat() if include_today else end
+    money: dict[str, dict[str, float]] = {}
+    profits: dict[str, float] = {}
+    if start <= history_end:
+        advertiser_ids = _scope_advertiser_ids(db, people, allowed_ids)
+        money = account_report_service.account_money_by_day(db, advertiser_ids, start, history_end)
+        profits = product_report_service.profit_by_day(
+            db, advertiser_ids, start, history_end, name_commission=name_commission
+        )
+    if include_today:
+        board = today_board or {}
+        cost = float(board.get("stat_cost") or 0)
+        pay = float(board.get("pay_amount") or 0)
+        settle = float(board.get("settle_amount") or 0)
+        if not board:
+            cost = sum(float(row.get("cost") or 0) for row in (today_rows or []))
+        money[today] = {
+            "cost": round(cost, 2),
+            "pay_amount": round(pay, 2),
+            "settle_amount": round(settle, 2),
+        }
+        profits[today] = round(sum(float(row.get("profit") or 0) for row in (today_rows or [])), 2)
+    points: list[dict[str, Any]] = []
+    for day in _iter_days(start, end):
+        item = money.get(day) or {}
+        pay = float(item.get("pay_amount") or 0)
+        profit = float(profits.get(day) or 0)
+        points.append(
+            {
+                "date": day,
+                "cost": round(float(item.get("cost") or 0), 2),
+                "profit": round(profit, 2),
+                "pay_amount": round(pay, 2),
+                "settle_amount": round(float(item.get("settle_amount") or 0), 2),
+                "profit_rate": round(profit / pay, 6) if pay > 0 else None,
+            }
+        )
+    return points
 
 
 def _finalize(
@@ -376,11 +424,12 @@ def _finalize(
         "note": note,
         "trend": trend,
         "trend_person": trend_person,
+        "daily_trend": [],
     }
 
 
 def _commission_of(stored: Any, pid: int, commission_map: dict[int, float]) -> float:
-    """缓存里已写上的佣金优先；没有、或是 0，再查库，仍没有就 60%。"""
+    """缓存里已写上的手填佣金优先，没有再查库。都没有就是 0。"""
     try:
         pct = float(stored)
     except (TypeError, ValueError):
@@ -398,6 +447,8 @@ def _add_products(bag: dict[int, dict[str, Any]], items: list[dict[str, Any]]) -
             agg["name"] = str(item["name"])
         agg["cost"] += float(item.get("cost") or 0)
         agg["sales"] += int(item.get("sales") or 0)
+        if item.get("settle") not in (None, ""):
+            agg["settle"] = float(agg.get("settle") or 0) + float(item.get("settle") or 0)
         if item.get("commission") not in (None, ""):
             agg["commission"] = item.get("commission")
 
@@ -416,12 +467,22 @@ def _merge_people(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _line_profit(prod: dict[str, Any], commission: float | None = None) -> float:
+    pct = commission if commission is not None else prod.get("commission")
+    name = str(prod.get("name") or "")
+    resolved = product_report_service.commission_from_saved_or_name(pct, name)
+    if resolved is None:
+        return 0.0
+    if prod.get("settle") not in (None, ""):
+        value = product_report_service.estimate_profit(
+            prod.get("settle"),
+            prod.get("cost"),
+            prod.get("refund"),
+            resolved,
+        )
+        return 0.0 if value is None else value
     basis = float(prod.get("basis") or 0)
     profit_cost = float(prod.get("profit_cost") or 0)
-    pct = commission if commission is not None else float(prod.get("commission") or 0)
-    if pct <= 0:
-        pct = product_report_service.DEFAULT_COMMISSION_PCT
-    return basis * pct / 100.0 - profit_cost
+    return basis * resolved / 100.0 - profit_cost
 
 
 def _bucket_profit(products: list[dict[str, Any]]) -> float:
@@ -446,7 +507,7 @@ async def apply_today_commission(product_id: int, commission_pct: float) -> None
     """
     pct = float(commission_pct or 0)
     if pct <= 0:
-        pct = product_report_service.DEFAULT_COMMISSION_PCT
+        return
     key = _today_key(date.today().isoformat())
     try:
         r = get_cache_redis()
@@ -558,15 +619,124 @@ async def today_account_profits() -> dict[int, float] | None:
     }
 
 
+async def _plan_name_commissions(
+    db: Session, advertiser_ids: list[int]
+) -> dict[tuple[int, int], float]:
+    """今天计划缓存里的佣金：手填优先，否则用计划名称。历史日表按商品套用。"""
+    ids = [int(item) for item in advertiser_ids]
+    if not ids:
+        return {}
+    caches = await today_plan_cache.mget_accounts(date.today().isoformat(), ids)
+    users = plan_commission_sync.user_commissions_by_advertiser(db, ids)
+    out: dict[tuple[int, int], float] = {}
+    for adv_id, payload in caches.items():
+        by_product = _commission_by_product(payload.get("plans") or [], users.get(int(adv_id)) or {})
+        for pid, pct in by_product.items():
+            out[(int(adv_id), int(pid))] = float(pct)
+    return out
+
+
+def _plans_have_money(plans: list[dict[str, Any]]) -> bool:
+    for plan in plans:
+        if plan.get("stats_from_product"):
+            continue
+        if float(plan.get("stat_cost") or 0) > 0 or float(plan.get("settle_amount") or 0) > 0:
+            return True
+    return False
+
+
+def _commission_by_product(
+    plans: list[dict[str, Any]], user_by_ad: dict[int, float]
+) -> dict[int, float]:
+    """同一商品：手填佣金优先，否则用计划名称里的佣金。"""
+    found: dict[int, float] = {}
+    for plan in plans:
+        try:
+            pid = int(plan.get("product_id") or 0)
+            ad_id = int(plan.get("ad_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not pid:
+            continue
+        typed = user_by_ad.get(ad_id)
+        pct = product_report_service.commission_from_saved_or_name(
+            typed,
+            str(plan.get("ad_name") or ""),
+            str(plan.get("product_name") or ""),
+        )
+        if typed and pct:
+            found[pid] = pct
+        elif pid not in found and pct:
+            found[pid] = pct
+    return found
+
+
+def account_from_product_rows(
+    rows: list[dict[str, Any]],
+    plans: list[dict[str, Any]],
+    meta_map: dict[tuple[int, int], dict[str, Any]],
+    advertiser_id: int,
+    user_by_ad: dict[int, float],
+) -> dict[str, Any]:
+    """商品报表上的消耗、净成交、销量。计划列表只提供名称里的佣金。"""
+    names = _commission_by_product(plans, user_by_ad)
+    products: list[dict[str, Any]] = []
+    profit = 0.0
+    for row in rows or []:
+        try:
+            pid = int(row.get("product_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not pid:
+            continue
+        meta = meta_map.get((int(advertiser_id), pid))
+        name = str(row.get("product_name") or (meta or {}).get("name") or "")
+        cost = float(row.get("cost") or 0)
+        settle = row.get("settle_amount")
+        value = product_report_service.profit_of_product(
+            settle=settle,
+            cost=cost,
+            meta=meta,
+            product_name=name,
+            user_commission=names.get(pid),
+        )
+        if value is not None:
+            profit += value
+        item = {
+            "pid": pid,
+            "name": name or product_report_service.display_name(pid, name),
+            "cost": round(cost, 2),
+            "sales": int(row.get("order_count") or 0),
+        }
+        if settle not in (None, ""):
+            item["settle"] = round(float(settle), 2)
+        if names.get(pid):
+            item["commission"] = names[pid]
+        products.append(item)
+    return {"profit": round(profit, 2), "products": products}
+
+
 async def today_plan_profit_overlay(db: Session) -> dict[int, float]:
-    """已经拉过计划的账户，利润改成这些计划相加，和计划页同一笔数。"""
+    """计划缓存里真有消耗或净成交时，才用计划覆盖今天的利润。全是 0 的不覆盖。"""
+    from app.services.plan_commission_sync import user_commissions_by_advertiser
+
     day = date.today().isoformat()
     ids = [int(row) for row in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
     cached = await today_plan_cache.mget_accounts(day, ids)
-    return {
-        adv_id: sum_plan_profits(list(item.get("plans") or []))
-        for adv_id, item in cached.items()
-    }
+    users = user_commissions_by_advertiser(db, list(cached))
+    meta = product_report_service.load_product_meta(db, list(cached))
+    out: dict[int, float] = {}
+    for adv_id, item in cached.items():
+        plans = list(item.get("plans") or [])
+        if not _plans_have_money(plans):
+            continue
+        out[int(adv_id)] = product_report_service.sum_plan_product_profits(
+            plans,
+            users.get(int(adv_id), {}),
+            meta,
+            int(adv_id),
+        )
+    return out
 
 
 async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, float] | None, str | None]:
@@ -590,8 +760,10 @@ async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, flo
     profits: dict[int, float] = defaultdict(float)
     have = False
     if start_d <= hist_end:
+        ids = [int(row) for row in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
+        name_commission = await _plan_name_commissions(db, ids)
         for adv_id, val in product_report_service.profits_by_advertiser(
-            db, start_d.isoformat(), hist_end.isoformat()
+            db, start_d.isoformat(), hist_end.isoformat(), name_commission
         ).items():
             profits[adv_id] += val
         have = True
@@ -612,45 +784,107 @@ async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, flo
     return {adv_id: round(val, 2) for adv_id, val in profits.items()}, note
 
 
-def plan_line_profit(plan: dict[str, Any]) -> float | None:
-    """和计划页同一笔算法。
+def _preset_range_key(start: str, end: str) -> str | None:
+    """和账户授权的今天 / 7天 / 30天是同一段时，返回那个缓存键。"""
+    today = date.today()
+    if start == end == today.isoformat():
+        return "today"
+    if end == today.isoformat() and start == (today - timedelta(days=6)).isoformat():
+        return "7"
+    if end == today.isoformat() and start == (today - timedelta(days=29)).isoformat():
+        return "30"
+    return None
 
-    佣金没填或是 0 时这条不计入，页面上显示横杠。
-    支付 ROI 为空时按 0，利润就是负的消耗。退款率再加 5%。
-    """
-    try:
-        pct = float(plan.get("commission_pct"))
-    except (TypeError, ValueError):
+
+async def _accounts_matching_advertiser_page(
+    db: Session,
+    start: str,
+    end: str,
+    people: list[str] | None,
+) -> list[dict[str, Any]]:
+    """读账户授权正在用的那份账户表。预设区间走同一份缓存，自定义日期再拉工作台。"""
+    from app.services import dashboard_cache
+    from app.services.advertiser_dashboard import dashboard_from_accounts, list_people
+
+    names = list(people) if people else list_people(db)
+    key = _preset_range_key(start, end)
+    if key and names:
+        data = await dashboard_cache.fetch_people(db, key, names, force=False, scope_all=False)
+        return list(data.get("accounts") or [])
+    rows = await load_roi2_accounts(start, end)
+    only = names[0] if people and len(people) == 1 else None
+    accounts = list(dashboard_from_accounts(rows, start, end, only).get("accounts") or [])
+    if people and len(people) != 1:
+        allow = set(people)
+        accounts = [
+            item
+            for item in accounts
+            if person_name(str(item.get("advertiser_name") or "")) in allow
+        ]
+    return accounts
+
+
+async def align_with_advertiser_page(
+    db: Session,
+    start: str,
+    end: str,
+    people: list[str] | None,
+    allowed_ids: set[int] | None,
+) -> dict[str, Any] | None:
+    """总消耗、支付、净成交、预估利润按账户授权同一批店相加。"""
+    from app.services.advertiser_dashboard import _overview
+
+    accounts = await _accounts_matching_advertiser_page(db, start, end, people)
+    if allowed_ids is not None:
+        accounts = [
+            item
+            for item in accounts
+            if int(item.get("advertiser_id") or 0) in allowed_ids
+        ]
+    if not accounts:
         return None
-    if not pct or pct <= 0:
-        return None
-    try:
-        cost = float(plan.get("stat_cost"))
-    except (TypeError, ValueError):
-        return None
-    roi_raw = plan.get("pay_roi")
-    if roi_raw in (None, ""):
-        roi_f = 0.0
-    else:
-        try:
-            roi_f = float(roi_raw)
-        except (TypeError, ValueError):
-            return None
-    rate = plan.get("refund_rate_1h")
-    if rate in (None, ""):
-        return None
-    try:
-        rate_f = float(rate)
-    except (TypeError, ValueError):
-        return None
-    if rate_f < 0:
-        return None
-    if rate_f > 1 and rate_f <= 100:
-        rate_f = rate_f / 100.0
-    if rate_f > 1:
-        return None
-    refund = min(1.0, rate_f + product_report_service.REFUND_EXTRA)
-    return cost * roi_f * (1.0 - refund) * pct / 100.0 - cost
+    profit_map, _note = await shop_profits(db, start, end)
+    profit_map = profit_map or {}
+    buckets: dict[str, dict[str, Any]] = {}
+    total_profit = 0.0
+    for item in accounts:
+        adv_id = int(item.get("advertiser_id") or 0)
+        who = person_name(str(item.get("advertiser_name") or "")) or "未分组"
+        profit = float(profit_map.get(adv_id, 0.0) or 0.0)
+        total_profit += profit
+        row = buckets.setdefault(who, {"name": who, "cost": 0.0, "profit": 0.0, "products": []})
+        row["cost"] += float(item.get("stat_cost") or 0)
+        row["profit"] += profit
+    people_rows = [
+        {
+            "name": row["name"],
+            "cost": round(row["cost"], 2),
+            "profit": round(row["profit"], 2),
+            "products": [],
+        }
+        for row in buckets.values()
+    ]
+    people_rows.sort(key=lambda row: row["cost"], reverse=True)
+    return {
+        "metrics": _overview(accounts),
+        "profit": round(total_profit, 2),
+        "people": people_rows,
+    }
+
+
+def plan_line_profit(plan: dict[str, Any]) -> float | None:
+    """净成交 × (1 − 实际退款率) × 佣金 − 消耗。没有佣金或没有净成交则不计入。"""
+    pct = product_report_service.commission_from_saved_or_name(
+        plan.get("commission_pct"),
+        str(plan.get("ad_name") or ""),
+        str(plan.get("product_name") or ""),
+    )
+    return product_report_service.estimate_profit(
+        plan.get("settle_amount"),
+        plan.get("stat_cost"),
+        plan.get("actual_refund_rate"),
+        pct,
+    )
 
 
 def sum_plan_profits(plans: list[dict[str, Any]]) -> float:
@@ -693,8 +927,6 @@ def rollup_plans(
     attached: set[int] = set()
     for plan in plans:
         line = plan_line_profit(plan)
-        if line is not None:
-            profit_sum += line
         raw_pid = plan.get("product_id")
         try:
             pid = int(raw_pid) if raw_pid not in (None, "", 0) else 0
@@ -709,8 +941,13 @@ def rollup_plans(
         if plan.get("product_name"):
             agg["name"] = str(plan["product_name"])
         agg["cost"] += float(plan.get("stat_cost") or 0)
+        if plan.get("settle_amount") not in (None, ""):
+            agg["settle"] = float(agg.get("settle") or 0) + float(plan.get("settle_amount") or 0)
+            agg["settle_known"] = True
         if line is not None:
             agg["profit"] += line
+            profit_sum += line
+        agg["orders"] = int(agg.get("orders") or 0) + int(plan.get("order_count") or 0)
         if pid not in attached:
             attached.add(pid)
     products: list[dict[str, Any]] = []
@@ -720,8 +957,9 @@ def rollup_plans(
                 "pid": pid,
                 "name": agg["name"] or product_report_service.display_name(pid, names.get(pid)),
                 "cost": round(float(agg["cost"]), 2),
-                "sales": int(sales_by_pid.get(pid) or 0),
+                "sales": int(sales_by_pid.get(pid) or agg.get("orders") or 0),
                 "profit": round(float(agg["profit"]), 2),
+                **({"settle": round(float(agg["settle"]), 2)} if agg.get("settle_known") else {}),
             }
         )
     for pid, sales in sales_by_pid.items():
@@ -772,6 +1010,8 @@ def _person_from_accounts(
                 "name": val["name"],
                 "cost": round(float(val["cost"]), 2),
                 "sales": int(val["sales"]),
+                **({"settle": round(float(val["settle"]), 2)} if "settle" in val else {}),
+                **({"commission": val["commission"]} if val.get("commission") not in (None, "") else {}),
             }
             for pid, val in bag.items()
         ],
@@ -786,13 +1026,18 @@ def assemble_today_snapshot(
     products_by_adv: dict[int, list[dict[str, Any]]] | None = None,
     official_total: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """用已经拉好的工作台账户和各账户计划拼今天的总览。不再打接口。
+    """用已经拉好的工作台账户和千川页面计划拼今天的总览。不再打接口。
 
-    消耗、支付、净成交、ROI 用工作台。利润用计划。商品销量仍用商品报表的订单数。
-    全部的 1 小时退货率用工作台合计，和原站数据概览同一笔。
+    顶部消耗、支付、净成交用工作台。利润和销量用页面计划上的金额、订单数。
+    传入商品报表时仍按商品行计算，15 分钟刷新不再传这份数据。
     """
+    from app.services.plan_commission_sync import user_commissions_by_advertiser
+
     products_by_adv = products_by_adv or {}
     db_people = _person_advertisers(db)
+    adv_for_meta = list(plans_by_adv)
+    users = user_commissions_by_advertiser(db, adv_for_meta)
+    meta = product_report_service.load_product_meta(db, adv_for_meta)
     board = overview_daily_service.rollup_people(workbench_accounts)
     official_rate = (official_total or {}).get("refund_rate_1h")
     if official_rate is None:
@@ -810,12 +1055,20 @@ def assemble_today_snapshot(
         failed = 0
         for adv_id in adv_ids:
             plans = plans_by_adv.get(int(adv_id))
-            if plans is None:
+            rows = products_by_adv.get(int(adv_id))
+            if plans is None and not rows:
                 failed += 1
                 continue
-            accounts_out[str(adv_id)] = account_from_plans(
-                plans, products_by_adv.get(int(adv_id))
-            )
+            if rows:
+                accounts_out[str(adv_id)] = account_from_product_rows(
+                    rows,
+                    plans or [],
+                    meta,
+                    int(adv_id),
+                    users.get(int(adv_id), {}),
+                )
+            else:
+                accounts_out[str(adv_id)] = account_from_plans(plans or [])
         if adv_ids and failed == len(adv_ids):
             errors.append(f"{person}：今天的计划没有拉到")
         cost = float((board.get(person) or {}).get("stat_cost") or 0)
@@ -928,6 +1181,100 @@ async def load_today_snapshot(db: Session, *, force: bool = False, prog_key: str
     }
 
 
+def _stored_product_profit(
+    products: list[dict[str, Any]],
+    plans: list[dict[str, Any]],
+    meta_map: dict[tuple[int, int], dict[str, Any]],
+    advertiser_id: int,
+    user_by_ad: dict[int, float],
+) -> float | None:
+    """快照里已经写下净成交时，按商品重算。只有消耗、没有净成交时返回 None，沿用快照里算好的利润。"""
+    usable = [
+        item
+        for item in products
+        if item.get("settle") not in (None, "")
+    ]
+    if not usable:
+        return None
+    names = _commission_by_product(plans, user_by_ad)
+    total = 0.0
+    counted = False
+    for item in usable:
+        try:
+            pid = int(item.get("pid") or 0)
+        except (TypeError, ValueError):
+            continue
+        meta = meta_map.get((int(advertiser_id), pid))
+        value = product_report_service.profit_of_product(
+            settle=item.get("settle"),
+            cost=item.get("cost"),
+            meta=meta,
+            product_name=str(item.get("name") or ""),
+            user_commission=names.get(pid) or item.get("commission"),
+        )
+        if value is not None:
+            counted = True
+            total += value
+    if not counted:
+        return None
+    return round(total, 2)
+
+
+async def _apply_today_product_profits(
+    db: Session,
+    snapshot: dict[str, Any],
+    rows: list[dict[str, Any]],
+    people: list[str] | None,
+    allowed_ids: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """今天的利润用快照里的商品净成交和消耗重算。计划缓存只补名称佣金，金额全是 0 时不用它。"""
+    from app.services.plan_commission_sync import user_commissions_by_advertiser
+
+    db_people = _people_scope(db, people, allowed_ids)
+    adv_ids = [int(adv) for ids in db_people.values() for adv in ids]
+    if not adv_ids:
+        return rows
+    accounts = snapshot.get("accounts") or {}
+    cached = await today_plan_cache.mget_accounts(date.today().isoformat(), adv_ids)
+    users = user_commissions_by_advertiser(db, adv_ids)
+    meta = product_report_service.load_product_meta(db, adv_ids)
+    profit_by_person: dict[str, float] = {}
+    for person, ids in db_people.items():
+        total = 0.0
+        used = False
+        for adv_id in ids:
+            item = accounts.get(str(adv_id)) or {}
+            plans = list((cached.get(int(adv_id)) or {}).get("plans") or [])
+            part = _stored_product_profit(
+                list(item.get("products") or []),
+                plans,
+                meta,
+                int(adv_id),
+                users.get(int(adv_id), {}),
+            )
+            if part is None:
+                total += float(item.get("profit") or 0)
+            else:
+                used = True
+                total += part
+        if used or allowed_ids is not None:
+            profit_by_person[person] = round(total, 2)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        name = str(row.get("name") or "")
+        seen.add(name)
+        if name in profit_by_person:
+            out.append({**row, "profit": profit_by_person[name]})
+        else:
+            out.append(row)
+    for name, profit in profit_by_person.items():
+        if name in seen:
+            continue
+        out.append({"name": name, "cost": 0.0, "profit": profit})
+    return out
+
+
 def _slice_today(snapshot: dict[str, Any], people: list[str] | None) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], list[str]]:
     raw = snapshot.get("people") or {}
     allow = None if people is None else set(people)
@@ -954,14 +1301,11 @@ async def _build_stored_range(
     *,
     force: bool,
     prog_key: str,
+    allowed_ids: set[int] | None = None,
 ) -> dict[str, Any]:
-    """昨天及以前：消耗和商品都读日表，缺的日子才补拉并入库。"""
-    settings = get_settings()
+    """昨天及以前：消耗和商品都读日表。还没入库的日子先按 0，打开页面时不补拉。"""
     await set_progress(prog_key, status="running", current=0, total=1, message="正在读取账户历史数据")
-    db_people = _person_advertisers(db)
-    if people is not None:
-        db_people = {k: v for k, v in db_people.items() if k in people}
-    await _ensure_account_days(db, start, end)
+    db_people = _people_scope(db, people, allowed_ids)
     adv_person = {adv_id: person for person, ids in db_people.items() for adv_id in ids}
     cost_by_advertiser = account_report_service.account_cost_by_advertiser(db, start, end)
     cost_by_person: dict[str, float] = defaultdict(float)
@@ -972,9 +1316,10 @@ async def _build_stored_range(
         cost_by_person[name] += float(cost or 0)
 
     commission_map = product_report_service.product_commissions(db)
+    adv_ids = [int(adv_id) for ids in db_people.values() for adv_id in ids]
+    name_commission = await _plan_name_commissions(db, adv_ids)
     targets = sorted(set(cost_by_person) | set(db_people))
-    client = await token_store.build_client(db)
-    gate = asyncio.Semaphore(max(1, int(settings.DASHBOARD_CONCURRENCY or 2)))
+    gate = asyncio.Semaphore(1)
     total = max(1, sum(max(1, len(db_people.get(p) or [])) for p in targets))
     done = 0
     await set_progress(prog_key, status="running", current=0, total=total, message="准备读取商品日数据")
@@ -988,7 +1333,7 @@ async def _build_stored_range(
         try:
             data = await _get_person_stats(
                 db,
-                client,
+                None,
                 person,
                 db_people.get(person) or [],
                 start,
@@ -997,6 +1342,7 @@ async def _build_stored_range(
                 gate=gate,
                 commission_map=commission_map,
                 tick=tick,
+                name_commission=name_commission,
             )
             return person, data, None
         except Exception as exc:
@@ -1033,6 +1379,7 @@ async def _build_stored_range(
         "from_cache": from_cache_all,
         "cached_at": cached_at,
         "commission_map": commission_map,
+        "name_commission": name_commission,
     }
 
 
@@ -1043,8 +1390,9 @@ async def build_overview(
     people: list[str] | None,
     *,
     force: bool = False,
+    allowed_ids: set[int] | None = None,
 ) -> dict[str, Any]:
-    await daily_sync.ensure_history_ready_for_overview(db, start, end)
+    missing_days = await daily_sync.ensure_history_ready_for_overview(db, start, end)
     today_d = date.today()
     today = today_d.isoformat()
     yesterday = (today_d - timedelta(days=1)).isoformat()
@@ -1064,7 +1412,7 @@ async def build_overview(
     history = None
     if has_history:
         history = await _build_stored_range(
-            db, start, history_end, people, force=force, prog_key=prog_key
+            db, start, history_end, people, force=force, prog_key=prog_key, allowed_ids=allowed_ids
         )
         commission_map = history["commission_map"]
 
@@ -1082,6 +1430,16 @@ async def build_overview(
             db, force=False, prog_key=None if has_history else prog_key
         )
         today_rows, today_products, today_errors = _slice_today(snapshot, people)
+        today_rows = await _apply_today_product_profits(
+            db, snapshot, today_rows, people, allowed_ids
+        )
+        if allowed_ids is not None:
+            today_products = {}
+            for adv_id in allowed_ids:
+                _add_products(
+                    today_products,
+                    ((snapshot.get("accounts") or {}).get(str(adv_id)) or {}).get("products") or [],
+                )
         today_cache = bool(snapshot.get("from_cache"))
         today_at = str(snapshot.get("cached_at") or "")
 
@@ -1099,23 +1457,49 @@ async def build_overview(
     ])
     errors = list(history["errors"] if history else []) + today_errors
     if has_history and include_today:
-        note = "昨天及以前按账户当天的 1 小时退货率算利润，再按天相加；今天按各条计划自己的退货率相加。消耗、支付、净成交用工作台缓存。"
+        note = "利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。昨天及以前用数据库里的商品相加，今天用 Redis 里的商品相加。手填佣金优先，没有再用名称里的佣金。"
         from_cache = bool(history["from_cache"]) and today_cache
         cached_at = max(history["cached_at"], today_at)
     elif include_today:
-        note = "今天的利润按各条计划自己的 1 小时退货率相加。顶部退货率用工作台这一段的合计，和原站同一笔。这一天不写入日表。"
+        note = "今天的利润用 Redis 里各商品的净成交和消耗相加。手填的实际退款率和佣金优先，佣金没填再用名称，都没有的商品不计入。"
         from_cache = today_cache
         cached_at = today_at
     else:
-        note = f"所选日期都已入库，数据截止 {end}。"
+        note = "" if missing_days else f"所选日期都已入库，数据截止 {end}。"
         from_cache = bool(history["from_cache"]) if history else False
         cached_at = history["cached_at"] if history else ""
+    if missing_days:
+        shown = "、".join(missing_days[:8])
+        extra = f" 等 {len(missing_days)} 天" if len(missing_days) > 8 else ""
+        note = f"{note} {shown}{extra} 还没有入库，这几天先不计入。".strip()
     await set_progress(prog_key, status="done", current=1, total=1, message="完成")
+    today_part = _workbench_slice(snapshot, people) if include_today and snapshot is not None else None
+    if allowed_ids is not None and include_today:
+        live_accounts = await load_roi2_accounts(today, today)
+        chosen = [
+            item
+            for item in live_accounts
+            if int(item.get("advertiser_id") or 0) in allowed_ids
+        ]
+        bucket = overview_daily_service._blank()
+        for item in chosen:
+            overview_daily_service._add(bucket, item)
+        today_part = overview_daily_service._finish(bucket, chosen)
+        if len(today_rows) == 1:
+            today_rows[0]["cost"] = today_part["stat_cost"]
     trend = None
     trend_person = None
     if people and len(people) == 1 and start < end:
         trend_person = people[0]
-        trend = _person_trend(db, trend_person, start, end, today_rows if include_today else None)
+        trend = _person_trend(
+            db,
+            trend_person,
+            start,
+            end,
+            today_rows if include_today else None,
+            history.get("name_commission") if history else None,
+            allowed_ids,
+        )
     result = _finalize(
         start,
         end,
@@ -1130,7 +1514,16 @@ async def build_overview(
         trend_person=trend_person,
     )
     person = people[0] if people and len(people) == 1 else None
-    today_part = _workbench_slice(snapshot, people) if include_today and snapshot is not None else None
+    result["daily_trend"] = _daily_trend(
+        db,
+        result["start_date"],
+        result["end_date"],
+        people,
+        today_rows if include_today else None,
+        today_part,
+        history.get("name_commission") if history else None,
+        allowed_ids,
+    )
     fetch_today = bool(include_today and today_part is None and snapshot is not None and not snapshot.get("pending"))
     try:
         metrics = await overview_daily_service.metrics_for_range(
@@ -1145,6 +1538,61 @@ async def build_overview(
         logger.warning("总览工作台汇总失败：%s", exc)
         result["workbench"] = None
         return result
+    if allowed_ids is not None:
+        money = {}
+        if has_history:
+            money = account_report_service.account_money_by_day(
+                db, list(allowed_ids), start, history_end
+            )
+        cost = sum(float(item["cost"]) for item in money.values())
+        pay = sum(float(item["pay_amount"]) for item in money.values())
+        settle = sum(float(item["settle_amount"]) for item in money.values())
+        if include_today and today_part:
+            cost += float(today_part.get("stat_cost") or 0)
+            pay += float(today_part.get("pay_amount") or 0)
+            settle += float(today_part.get("settle_amount") or 0)
+        metrics["stat_cost"] = round(cost, 2)
+        metrics["pay_amount"] = round(pay, 2)
+        metrics["settle_amount"] = round(settle, 2)
+        metrics["pay_roi"] = round(pay / cost, 4) if cost > 0 else None
+        metrics["settle_roi"] = round(settle / cost, 4) if cost > 0 else None
     result["workbench"] = overview_daily_service.with_profit_rate(metrics, result["kpis"]["total_profit"])
     result["kpis"]["total_cost"] = metrics["stat_cost"]
+    try:
+        aligned = await align_with_advertiser_page(
+            db, result["start_date"], result["end_date"], people, allowed_ids
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("按账户授权对齐总览失败：%s", exc)
+        aligned = None
+    if aligned:
+        board = dict(aligned["metrics"])
+        if metrics.get("refund_rate_1h") is not None:
+            board["refund_rate_1h"] = metrics["refund_rate_1h"]
+        result["people"] = aligned["people"]
+        result["kpis"]["total_profit"] = aligned["profit"]
+        result["kpis"]["total_cost"] = board["stat_cost"]
+        result["kpis"]["people_count"] = len(aligned["people"])
+        result["workbench"] = overview_daily_service.with_profit_rate(board, aligned["profit"])
+        today_iso = date.today().isoformat()
+        if result["start_date"] <= today_iso <= result["end_date"]:
+            today_aligned = aligned
+            if not (result["start_date"] == result["end_date"] == today_iso):
+                try:
+                    today_aligned = await align_with_advertiser_page(
+                        db, today_iso, today_iso, people, allowed_ids
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("按账户授权对齐今天趋势失败：%s", exc)
+                    today_aligned = None
+            if today_aligned:
+                for point in result.get("daily_trend") or []:
+                    if point.get("date") != today_iso:
+                        continue
+                    point["cost"] = today_aligned["metrics"]["stat_cost"]
+                    point["pay_amount"] = today_aligned["metrics"]["pay_amount"]
+                    point["settle_amount"] = today_aligned["metrics"]["settle_amount"]
+                    point["profit"] = today_aligned["profit"]
+                    pay = float(point["pay_amount"] or 0)
+                    point["profit_rate"] = round(today_aligned["profit"] / pay, 6) if pay > 0 else None
     return result

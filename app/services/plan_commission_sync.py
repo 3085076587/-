@@ -84,14 +84,45 @@ def resolve_plan_commission_pct(
     ad_id: int,
     saved_commission: dict[int, float],
 ) -> float | None:
-    """展示与算利润：名称里有佣金优先，否则用手填入库值。"""
-    parsed = parse_commission_from_plan_name(ad_name)
-    if parsed is not None:
-        return parsed
+    """手填佣金优先，没有再解析名称里的佣金，都没有返回 None。"""
     stored = saved_commission.get(int(ad_id))
-    if stored is None or float(stored) <= 0:
-        return None
-    return round(float(stored), 2)
+    if stored is not None and float(stored) > 0:
+        return round(float(stored), 2)
+    return parse_commission_from_plan_name(ad_name)
+
+
+def user_saved_commissions(db: Session, advertiser_id: int) -> dict[int, float]:
+    """只取用户手填的计划佣金。名称同步写入的行不参与优先。"""
+    rows = db.scalars(
+        select(PlanCommission).where(
+            PlanCommission.advertiser_id == advertiser_id,
+            PlanCommission.filled_by_user == 1,
+        )
+    ).all()
+    return {
+        int(row.ad_id): round(float(row.commission_pct), 2)
+        for row in rows
+        if float(row.commission_pct) > 0
+    }
+
+
+def user_commissions_by_advertiser(
+    db: Session, advertiser_ids: list[int]
+) -> dict[int, dict[int, float]]:
+    if not advertiser_ids:
+        return {}
+    rows = db.scalars(
+        select(PlanCommission).where(
+            PlanCommission.advertiser_id.in_(list(advertiser_ids)),
+            PlanCommission.filled_by_user == 1,
+        )
+    ).all()
+    out: dict[int, dict[int, float]] = {}
+    for row in rows:
+        if float(row.commission_pct) <= 0:
+            continue
+        out.setdefault(int(row.advertiser_id), {})[int(row.ad_id)] = round(float(row.commission_pct), 2)
+    return out
 
 
 def _snapshot_key(advertiser_id: int, start: str, end: str) -> str:
@@ -128,7 +159,7 @@ def _delete_commission(db: Session, advertiser_id: int, ad_id: int) -> bool:
             PlanCommission.ad_id == ad_id,
         )
     )
-    if row is None:
+    if row is None or int(row.filled_by_user or 0) == 1:
         return False
     db.delete(row)
     return True
@@ -142,12 +173,22 @@ def _upsert_commission(db: Session, advertiser_id: int, ad_id: int, pct: float) 
         )
     )
     pct = round(float(pct), 2)
+    if row is not None and int(row.filled_by_user or 0) == 1:
+        return False
     if row is None:
-        db.add(PlanCommission(advertiser_id=advertiser_id, ad_id=ad_id, commission_pct=pct))
+        db.add(
+            PlanCommission(
+                advertiser_id=advertiser_id,
+                ad_id=ad_id,
+                commission_pct=pct,
+                filled_by_user=0,
+            )
+        )
         return True
     if float(row.commission_pct) == pct:
         return False
     row.commission_pct = pct
+    row.filled_by_user = 0
     return True
 
 
@@ -157,7 +198,7 @@ def _apply_diff(
     current: dict[str, dict[str, Any]],
     previous: dict[str, dict[str, Any]],
 ) -> dict[str, int]:
-    """对比快照，名称佣金为准；计划从列表消失则删佣金行。"""
+    """名称里的佣金只补没有手填的行。用户填过的佣金不被名称同步覆盖或删掉。"""
     stats = {"updated": 0, "deleted": 0, "skipped": 0}
     for ad_key, info in current.items():
         ad_id = int(ad_key)

@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Integer, Numeric, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, Integer, Numeric, SmallInteger, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -18,6 +18,9 @@ class PlanCommission(Base):
     ad_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="计划ID")
     commission_pct: Mapped[Decimal] = mapped_column(
         Numeric(8, 2), nullable=False, comment="佣金比例，单位百分数，例如 20 表示 20%"
+    )
+    filled_by_user: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default="0", comment="1=用户在插件或页面手填，0=名称同步"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间"

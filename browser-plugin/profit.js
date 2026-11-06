@@ -1,8 +1,6 @@
 /** 预估利润：填了实际退款率就扣这个比例，没填按 0。结果始终叫预估利润。 */
 const QcProfit = globalThis.QcProfit = (() => {
   const RATE_KEY = "qc_product_refund_v1";
-  const REFUND_EXTRA = 0.05;
-
   function isFilled(value) {
     return value !== null && value !== undefined && String(value).trim() !== "";
   }

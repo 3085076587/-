@@ -6,7 +6,7 @@
   <title>数据总览 · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261104c">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261106b">
 </head>
 <body>
 <div class="layout">
@@ -42,27 +42,37 @@
           <button class="btn btn-primary" id="btn-query">查询</button>
           <button class="btn" id="btn-export">导出</button>
         </div>
-        <p class="hint">利润 = 消耗 × 支付ROI × (1 − 1小时退货率 − 5%) × 佣金 − 消耗。退货率用巨量返回的 1 小时退货率，显示时再加 5%。总利润和个人利润都是下面各账户利润相加，不拿平均退货率重算一遍。</p>
-        <p class="hint">某一天：商品自己有 1 小时退货率就用商品的；没有就用这个账户当天的 1 小时退货率。一段时间先按天算完，再把每天的利润相加。今天改用每条计划自己的 1 小时退货率，支付 ROI 为空按 0，没填佣金的计划不计入。昨天及以前佣金按商品，空或 0 按 60%。</p>
-        <p class="hint">顶部的 1 小时内退款率直接用工作台这一段时间的合计，和原站数据概览同一笔，显示时再加 5%。选一个人时，只取这个人账户的合计。这一段还没有合计时会重新拉一次。</p>
+        <p class="hint">利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。实际退款率用插件或页面手填的，没填按 0。佣金先用插件手填的，没填再用商品或计划名称里的「佣金:xx%」，都没有的商品不计入。</p>
+        <p class="hint">预估总利润是所有商品的利润相加。看今天时用 Redis 里的净成交和消耗来算，看昨天及以前时用数据库里的商品日数据来算，两边各自加总后再合成这一段。</p>
+        <p class="hint">顶部的 1 小时内退款率直接用工作台这一段时间的合计，和原站数据概览同一笔。选一个人时，只取这个人账户的合计。这一段还没有合计时会重新拉一次。</p>
         <p class="hint" id="ov-meta">-</p>
       </div>
 
       <div class="stats stats-overview">
         <div class="stat-card"><div class="stat-num ov-purple" id="kpi-cost">-</div><div class="stat-label">总消耗</div></div>
-        <div class="stat-card"><div class="stat-num ov-purple" id="kpi-profit">-</div><div class="stat-label">总利润</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-profit-rate">-</div><div class="stat-label">总利润率</div></div>
+        <div class="stat-card"><div class="stat-num ov-purple" id="kpi-profit">-</div><div class="stat-label">预估总利润</div></div>
+        <div class="stat-card"><div class="stat-num" id="kpi-profit-rate">-</div><div class="stat-label">预估总利润率</div></div>
         <div class="stat-card"><div class="stat-num" id="kpi-pay">-</div><div class="stat-label">用户实际支付金额</div></div>
         <div class="stat-card"><div class="stat-num" id="kpi-pay-roi">-</div><div class="stat-label">整体支付 ROI</div></div>
         <div class="stat-card"><div class="stat-num" id="kpi-settle">-</div><div class="stat-label">净成交金额</div></div>
         <div class="stat-card"><div class="stat-num" id="kpi-settle-roi">-</div><div class="stat-label">净成交 ROI</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-refund">-</div><div class="stat-label">1小时内退款率 <span class="rate-extra">已加5%</span></div></div>
+        <div class="stat-card"><div class="stat-num" id="kpi-refund">-</div><div class="stat-label">1小时内退款率</div></div>
         <div class="stat-card"><div class="stat-num ov-blue" id="kpi-people">-</div><div class="stat-label">运营数</div></div>
+      </div>
+
+      <div class="panel chart-panel">
+        <div class="toolbar">
+          <div class="panel-title" style="margin:0;">每日趋势</div>
+          <div class="spacer"></div>
+          <div class="trend-picks" id="trend-picks"></div>
+        </div>
+        <p class="hint">勾选后画在同一张图上。金额用左轴，预估总利润率用右轴，等于当天预估利润 ÷ 当天用户实际支付金额。</p>
+        <div class="chart-box" id="chart-daily"></div>
       </div>
 
       <div class="chart-grid">
         <div class="panel chart-panel"><div class="panel-title" id="chart-cost-title">各运营消耗对比</div><div class="chart-box" id="chart-cost"></div></div>
-        <div class="panel chart-panel"><div class="panel-title" id="chart-profit-title">各运营利润对比</div><div class="chart-box" id="chart-profit"></div></div>
+        <div class="panel chart-panel"><div class="panel-title" id="chart-profit-title">各运营预估利润对比</div><div class="chart-box" id="chart-profit"></div></div>
       </div>
       <div class="panel chart-panel"><div class="panel-title">产品消耗 Top</div><div class="chart-box chart-box-tall" id="chart-product-cost"></div></div>
       <div class="panel chart-panel"><div class="panel-title">商品链接销量 Top</div><div class="chart-box chart-box-tall" id="chart-product-sales"></div></div>
@@ -82,7 +92,7 @@
 
 <script src="/static/js/echarts.min.js"></script>
 <script src="/static/js/common.js?v=20261103u"></script>
-<script src="/static/js/partials.js?v=20261103u"></script>
-<script src="/static/js/overview.js?v=20261104d"></script>
+<script src="/static/js/partials.js?v=20261106d"></script>
+<script src="/static/js/overview.js?v=20261106g"></script>
 </body>
 </html>

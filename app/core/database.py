@@ -38,6 +38,13 @@ _REQUIRED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
             "AFTER commission_pct",
         ),
     ],
+    "plan_commission": [
+        (
+            "filled_by_user",
+            "TINYINT NOT NULL DEFAULT 0 COMMENT '1=用户在插件或页面手填，0=名称同步'",
+            "AFTER commission_pct",
+        ),
+    ],
     "qianchuan_product_daily": [
         ("settle_roi", "DECIMAL(16,4) NULL COMMENT '净成交ROI'", "AFTER settle_amount"),
         ("refund_rate_1h", "DECIMAL(8,6) NULL COMMENT '1小时内退款率（0~1）'", "AFTER settle_roi"),

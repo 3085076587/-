@@ -74,7 +74,8 @@ def verify_credentials(db: Session, username: str, password: str) -> bool:
 
 
 def read_session(request: Request) -> dict[str, Any] | None:
-    return parse_session_token(request.cookies.get(COOKIE_NAME))
+    token = request.cookies.get(COOKIE_NAME) or request.headers.get("x-ad-helper-session")
+    return parse_session_token(token)
 
 
 def set_session_cookie(response: Response, username: str) -> None:

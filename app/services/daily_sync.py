@@ -84,40 +84,34 @@ def verify_day_completeness(db: Session, day: str, advertiser_ids: list[int] | N
     }
 
 
-def history_range_ready(db: Session, start: str, end: str) -> tuple[bool, str | None]:
-    """区间内每个已结束、且不早于 DATA_FROM 的自然日是否都已验收通过。"""
+def incomplete_history_days(db: Session, start: str, end: str) -> list[str]:
+    """区间内还没验收通过的历史日。今天单独查询返回空列表。"""
     today = date.today()
     yesterday = today - timedelta(days=1)
     hist_end = date.fromisoformat(end) if end < today.isoformat() else yesterday
     hist_start = max(date.fromisoformat(start), DATA_FROM)
     if hist_start > hist_end:
-        return True, None
+        return []
     bad: list[str] = []
     for day in _iter_days(hist_start.isoformat(), hist_end.isoformat()):
         if not verify_day_completeness(db, day)["complete"]:
             bad.append(day)
+    return bad
+
+
+def history_range_ready(db: Session, start: str, end: str) -> tuple[bool, str | None]:
+    """区间内每个已结束、且不早于 DATA_FROM 的自然日是否都已验收通过。"""
+    bad = incomplete_history_days(db, start, end)
     if not bad:
         return True, None
-    if len(bad) == 1 and bad[0] == yesterday.isoformat():
-        return False, "系统正在汇总昨天的数据，请稍后再查看。"
     shown = "、".join(bad[:8])
     extra = f" 等 {len(bad)} 天" if len(bad) > 8 else ""
-    return False, f"历史数据尚未汇总完成（{shown}{extra}），请稍后再查看。"
+    return False, f"{shown}{extra} 还没有入库，这几天先不计入。"
 
 
-async def ensure_history_ready_for_overview(db: Session, start: str, end: str) -> None:
-    """正在汇总的那一天落在查询区间内，或历史日未验收时，禁止总览继续。今天单独查询不受影响。"""
-    from app.core.exceptions import AppError
-    from app.services.daily_sync_status import running_info
-
-    running = await running_info()
-    if running:
-        day = str(running.get("day") or "")
-        if day and start <= day <= end:
-            raise AppError(f"系统正在汇总 {day} 的数据，请稍后再查看。", code=50301)
-    ok, msg = history_range_ready(db, start, end)
-    if not ok and msg:
-        raise AppError(msg, code=50301)
+async def ensure_history_ready_for_overview(db: Session, start: str, end: str) -> list[str]:
+    """缺的历史日不拦总览。返回还没入库的日期，页面用库里已有的商品继续算。"""
+    return incomplete_history_days(db, start, end)
 
 
 async def sync_day_all(db: Session, day: str) -> dict[str, Any]:

@@ -12,8 +12,8 @@ from app.models.ad_plan import QianchuanAdPlan
 from app.models.ad_report import QianchuanAdReport
 from app.models.advertiser import QianchuanAdvertiser
 from app.services import token_store
-from app.services.account_access import assert_advertiser_access, current_username, is_admin
-from app.services.advertiser_dashboard import _has_parentheses, person_name
+from app.services.account_access import assert_advertiser_access, current_username, visible_advertiser_ids
+from app.services.advertiser_dashboard import _has_parentheses
 
 router = APIRouter(tags=["Query"])
 
@@ -55,6 +55,7 @@ def oauth_status(db: Session = Depends(get_db)):
 @router.get("/advertiser/list", summary="查询已同步的千川子账户")
 def list_advertisers(request: Request, db: Session = Depends(get_db)):
     username = current_username(request)
+    allowed = visible_advertiser_ids(db, username)
     rows = db.scalars(
         select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())
     ).all()
@@ -63,7 +64,7 @@ def list_advertisers(request: Request, db: Session = Depends(get_db)):
         adv_name = r.advertiser_name or ""
         if not _has_parentheses(adv_name):
             continue
-        if not is_admin(username) and person_name(adv_name) != username:
+        if allowed is not None and int(r.advertiser_id) not in allowed:
             continue
         visible.append(
             {

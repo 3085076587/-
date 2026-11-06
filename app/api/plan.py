@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
@@ -14,9 +15,11 @@ from app.schemas.plan import (
     UpdateRoiIn,
     UpdateStatusIn,
 )
-from app.services import overview_service, plan_service, product_refund, today_plan_cache, uni_create_service, uni_plan_service
-from app.services.account_access import assert_advertiser_access, current_username
+from app.clients import qianchuan_page
+from app.services import overview_service, plan_service, product_refund, today_plan_cache, uni_create_service, uni_plan_service, workbench_session
+from app.services.account_access import assert_advertiser_access, assert_can_operate, current_username
 
+logger = logging.getLogger("uvicorn.error")
 router = APIRouter(tags=["Plan"])
 
 
@@ -56,36 +59,80 @@ async def list_uni_plans(
     today = date.today().isoformat()
     start = start_date or today
     end = end_date or today
-    if start != today or end != today:
+    if start > end:
+        raise AppError("开始日期不能晚于结束日期")
+    page_data = await _plans_from_qianchuan_page(db, advertiser_id, start, end)
+    if page_data is not None:
+        data = page_data
+    elif start != today or end != today:
         data = await uni_plan_service.list_uni_plans(
             db, advertiser_id, start_date=start, end_date=end
         )
+        await uni_plan_service.attach_product_stats(
+            db, advertiser_id, start, end, data.get("plans") or []
+        )
         product_refund.attach_refund_rates(db, advertiser_id, data.get("plans") or [])
         return ok(data)
-    try:
-        data = await uni_plan_service.list_uni_plans(
-            db, advertiser_id, start_date=today, end_date=today
-        )
-    except Exception as exc:
-        cached = await today_plan_cache.get_account(today, advertiser_id)
-        if cached is None:
-            raise
-        cached["note"] = f"本次没拉到，仍显示该账户上一份计划（{exc}）"
-        product_refund.attach_refund_rates(db, advertiser_id, cached.get("plans") or [])
-        return ok(cached)
+    else:
+        try:
+            data = await uni_plan_service.list_uni_plans(
+                db, advertiser_id, start_date=today, end_date=today
+            )
+        except Exception as exc:
+            cached = await today_plan_cache.get_account(today, advertiser_id)
+            if cached is None:
+                raise
+            cached["note"] = f"本次没拉到，仍显示该账户上一份计划（{exc}）"
+            await uni_plan_service.attach_product_stats(
+                db, advertiser_id, today, today, cached.get("plans") or []
+            )
+            product_refund.attach_refund_rates(db, advertiser_id, cached.get("plans") or [])
+            return ok(cached)
+        plans = list(data.get("plans") or [])
+        await uni_plan_service.attach_product_stats(db, advertiser_id, today, today, plans)
+        data["plans"] = plans
     plans = list(data.get("plans") or [])
-    saved = await today_plan_cache.put_account(
-        today,
-        advertiser_id,
-        plans,
-        start_date=today,
-        end_date=today,
-    )
-    await overview_service.patch_today_account(db, advertiser_id, plans)
-    data["cached_at"] = saved.get("cached_at")
-    data["note"] = "只更新了当前账户的计划"
-    product_refund.attach_refund_rates(db, advertiser_id, data.get("plans") or [])
+    if start == today and end == today and data.get("source") == "qianchuan_page":
+        saved = await today_plan_cache.put_account(
+            today,
+            advertiser_id,
+            plans,
+            start_date=today,
+            end_date=today,
+        )
+        await overview_service.patch_today_account(db, advertiser_id, plans)
+        data["cached_at"] = saved.get("cached_at")
+        if not data.get("note"):
+            data["note"] = "只更新了当前账户的计划"
+    product_refund.attach_refund_rates(db, advertiser_id, plans)
     return ok(data)
+
+
+async def _plans_from_qianchuan_page(db, advertiser_id: int, start: str, end: str):
+    """千川页面能拉到就用页面。登录失效或接口失败时返回 None，改走开放平台。"""
+    row = workbench_session.get_session(db)
+    if row is None or not (row.cookie or "").strip():
+        return None
+    try:
+        plans = await qianchuan_page.fetch_product_plans(row.cookie, advertiser_id, start, end)
+    except AppError as exc:
+        if exc.code in (40121, 40421):
+            raise
+        logger.warning("千川页面计划没拉到，改走开放平台 advertiser=%s：%s", advertiser_id, exc.msg)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("千川页面计划没拉到，改走开放平台 advertiser=%s：%s", advertiser_id, exc)
+        return None
+    uni_plan_service.apply_local_commission(db, advertiser_id, plans)
+    return {
+        "advertiser_id": advertiser_id,
+        "start_date": start,
+        "end_date": end,
+        "plans": plans,
+        "total": len(plans),
+        "note": "千川页面",
+        "source": "qianchuan_page",
+    }
 
 
 @router.post("/product/refund-rate", summary="保存商品实际退款率")
@@ -95,6 +142,7 @@ def save_product_refund(
     db: Session = Depends(get_db),
 ):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    assert_can_operate(db, current_username(request), "plan")
     data = product_refund.save_product_refund(
         db,
         payload.advertiser_id,
@@ -108,6 +156,7 @@ def save_product_refund(
 @router.post("/plan/commission", summary="保存计划佣金比例")
 async def save_commission(payload: SaveCommissionIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    assert_can_operate(db, current_username(request), "plan")
     data = uni_plan_service.save_plan_commission(
         db,
         payload.advertiser_id,
@@ -161,6 +210,7 @@ async def list_uni_plan_logs(
 @router.post("/plan/uni/delete", summary="删除推商品全域计划")
 async def delete_uni_plans(payload: DeletePlansIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    assert_can_operate(db, current_username(request), "plan")
     data = await uni_plan_service.delete_plans(db, payload)
     return ok(data)
 
@@ -168,6 +218,7 @@ async def delete_uni_plans(payload: DeletePlansIn, request: Request, db: Session
 @router.post("/plan/update-status", summary="启停全域计划")
 async def update_plan_status(payload: UpdateStatusIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    assert_can_operate(db, current_username(request), "account")
     data = await uni_plan_service.update_plan_status(db, payload)
     return ok(data)
 
@@ -207,6 +258,7 @@ async def upload_uni_video(
     db: Session = Depends(get_db),
 ):
     assert_advertiser_access(db, current_username(request), advertiser_id)
+    assert_can_operate(db, current_username(request), "plan")
     content = await file.read()
     data = await uni_create_service.upload_video(
         db, advertiser_id, file.filename or "video.mp4", content
@@ -223,6 +275,7 @@ async def upload_uni_image(
     db: Session = Depends(get_db),
 ):
     assert_advertiser_access(db, current_username(request), advertiser_id)
+    assert_can_operate(db, current_username(request), "plan")
     content = await file.read()
     data = await uni_create_service.upload_image(
         db,
@@ -237,6 +290,7 @@ async def upload_uni_image(
 @router.post("/plan/uni/create", summary="新建商品全域计划")
 async def create_uni_plan(payload: CreateUniPlanIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    assert_can_operate(db, current_username(request), "plan")
     data = await uni_create_service.create_plan(db, payload)
     return ok(data)
 
@@ -244,5 +298,6 @@ async def create_uni_plan(payload: CreateUniPlanIn, request: Request, db: Sessio
 @router.post("/plan/update-roi", summary="修改净成交 ROI 目标，可选提醒")
 async def update_roi(payload: UpdateRoiIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
+    assert_can_operate(db, current_username(request), "account")
     data = await uni_plan_service.update_roi_with_reminder(db, payload)
     return ok(data)

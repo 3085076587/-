@@ -7,7 +7,7 @@ from app.api.deps import get_db
 from app.core.response import ok
 from app.services import advertiser_dashboard as advertiser_dashboard_service
 from app.services import advertiser_service, dashboard_cache, overview_service
-from app.services.account_access import current_username, is_admin
+from app.services.account_access import current_username, is_admin, people_for_visible, visible_advertiser_ids
 
 router = APIRouter(tags=["Advertiser"])
 
@@ -18,6 +18,48 @@ def _people_for(db: Session, username: str) -> list[str]:
     return [username]
 
 
+def _empty_dashboard() -> dict:
+    return {
+        "start_date": "",
+        "end_date": "",
+        "overview": {
+            "stat_cost": 0.0,
+            "pay_amount": 0.0,
+            "pay_roi": None,
+            "settle_amount": 0.0,
+            "settle_roi": None,
+        },
+        "accounts": [],
+        "total": 0,
+        "stale_count": 0,
+        "from_cache": True,
+        "cached_at": None,
+    }
+
+
+def _keep_visible_accounts(data: dict, allowed: set[int] | None) -> None:
+    if allowed is None:
+        return
+    accounts = [
+        item
+        for item in (data.get("accounts") or [])
+        if int(item.get("advertiser_id") or 0) in allowed
+    ]
+    accounts.sort(key=lambda item: float(item.get("stat_cost") or 0), reverse=True)
+    data["accounts"] = accounts
+    data["total"] = len(accounts)
+    sum_cost = sum(float(item.get("stat_cost") or 0) for item in accounts)
+    sum_pay = sum(float(item.get("pay_amount") or 0) for item in accounts)
+    sum_settle = sum(float(item.get("settle_amount") or 0) for item in accounts)
+    data["overview"] = {
+        "stat_cost": round(sum_cost, 2),
+        "pay_amount": round(sum_pay, 2),
+        "pay_roi": advertiser_dashboard_service.weighted_pay_roi(accounts),
+        "settle_amount": round(sum_settle, 2),
+        "settle_roi": advertiser_dashboard_service.weighted_settle_roi(accounts),
+    }
+
+
 def _stamp(data: dict, username: str) -> dict:
     data["viewer"] = username
     data["viewer_scope"] = "全部人员" if is_admin(username) else username
@@ -25,7 +67,7 @@ def _stamp(data: dict, username: str) -> dict:
 
 
 async def _attach_profits(db: Session, data: dict) -> dict:
-    """利润不进工作台缓存。今天优先用该账户每条计划自己的退货率相加；昨天及以前用账户当天的 1 小时退货率，按天算完再相加。"""
+    """利润不进工作台缓存。昨天及以前读商品日表，佣金用当前计划上的手填或名称；今天用计划缓存。"""
     start = data.get("start_date") or date.today().isoformat()
     end = data.get("end_date") or start
     profits, note = await overview_service.shop_profits(db, start, end)
@@ -60,11 +102,18 @@ async def get_advertiser_dashboard(
 ):
     username = current_username(request)
     people = _people_for(db, username)
+    allowed = visible_advertiser_ids(db, username)
+    if allowed is not None:
+        people = people_for_visible(db, allowed)
     range_key = (range or "").strip()
     if range_key in dashboard_cache.PRESET_RANGES:
-        data = await dashboard_cache.fetch_people(
-            db, range_key, people, force=refresh, scope_all=is_admin(username)
-        )
+        if allowed is not None and not people:
+            data = _empty_dashboard()
+        else:
+            data = await dashboard_cache.fetch_people(
+                db, range_key, people, force=refresh, scope_all=is_admin(username)
+            )
+        _keep_visible_accounts(data, allowed)
         await _attach_profits(db, data)
         return ok(_stamp(data, username))
 
@@ -85,6 +134,7 @@ async def get_advertiser_dashboard(
         parts.append(part)
     data = dashboard_cache.merge_dashboards(parts)
     data["range"] = "custom"
+    _keep_visible_accounts(data, allowed)
     await _attach_profits(db, data)
     return ok(_stamp(data, username))
 

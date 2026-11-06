@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>子账户 · 千川方舟 ERP</title>
+  <title>账户授权 · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261103u">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261106i">
 </head>
 <body>
 <div class="layout">
   <aside class="sidebar" id="sidebar-mount" data-active="advertisers"></aside>
   <div class="main">
     <header class="topbar">
-      <div class="breadcrumb">子账户</div>
+      <div class="breadcrumb">账户授权</div>
       <div class="topbar-right">
         <span class="status-pill bad" id="token-pill"><span class="status-dot"></span>未授权</span>
       </div>
@@ -47,10 +47,14 @@
         <p class="hint" id="dash-hint">今天/7天/30天读 Redis 缓存；点刷新会删缓存重拉。自定义日期直接调接口。</p>
       </div>
 
-      <div class="stats stats-5">
+      <div class="stats stats-6">
         <div class="stat-card">
           <div class="stat-num" id="ov-cost">-</div>
           <div class="stat-label">整体消耗</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num ov-purple" id="ov-profit">-</div>
+          <div class="stat-label">总预估利润</div>
         </div>
         <div class="stat-card">
           <div class="stat-num" id="ov-pay">-</div>
@@ -83,25 +87,26 @@
           </div>
           <button class="btn" type="button" id="btn-reset-filter">重置筛选</button>
         </div>
-        <p class="hint" id="profit-hint">利润 = 消耗 × 支付ROI × (1 − 1小时退货率 − 5%) × 佣金 − 消耗。某一天用这个账户当天的 1 小时退货率；选一段时间就按天算完再相加。今天如果计划缓存里已有各条计划，就改用每条计划自己的退货率相加，没填佣金的计划不计入。列表上的退货率是工作台这一段时间的账户退货率，显示时已加 5%。</p>
+        <p class="hint" id="profit-hint">利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。今天用 Redis 里各商品相加，昨天及以前用数据库里的商品日数据相加。手填佣金优先，没有再用名称，都没有不计入。列表上的退货率仍是工作台的 1 小时退货率。</p>
         <div class="table-wrap">
           <table id="adv-table">
             <thead>
               <tr>
                 <th>账户信息</th>
+                <th class="sortable" data-sort="group">分组 <span class="sort-ind"></span></th>
                 <th>账户状态</th>
                 <th class="sortable" data-sort="stat_cost">整体消耗 <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="pay_roi">整体支付ROI <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="pay_amount">用户实际支付金额 <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="settle_amount">净成交金额 <span class="sort-ind"></span></th>
                 <th class="sortable" data-sort="settle_roi">净成交ROI <span class="sort-ind"></span></th>
-                <th class="sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="rate-extra">已加5%</span> <span class="sort-ind"></span></th>
-                <th class="sortable" data-sort="profit">利润 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="profit">预估利润 <span class="sort-ind"></span></th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="advertiser-tbody">
-              <tr><td colspan="10" class="empty">正在加载…</td></tr>
+              <tr><td colspan="11" class="empty">正在加载…</td></tr>
             </tbody>
           </table>
         </div>
@@ -120,8 +125,8 @@
 </div>
 
 <script src="/static/js/common.js?v=20261103u"></script>
-<script src="/static/js/partials.js?v=20261103u"></script>
+<script src="/static/js/partials.js?v=20261106d"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/advertisers.js?v=20261104e"></script>
+<script src="/static/js/advertisers.js?v=20261106i"></script>
 </body>
 </html>

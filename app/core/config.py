@@ -49,7 +49,10 @@ class Settings(BaseSettings):
     DAILY_SYNC_RETRY_BASE_SECONDS: float = 3.0
     DAILY_SYNC_PAUSE_SECONDS: float = 2.0
 
-    # 今天 15 分钟刷新：按账户串行，每个账户之间的间隔（秒）
+    # 今天 15 分钟刷新：同时从千川页面拉取的账户数
+    TODAY_PLAN_CONCURRENCY: int = 8
+
+    # 今天 15 分钟刷新：并发为 1 时，每个账户之间的间隔（秒）
     TODAY_ACCOUNT_PAUSE_SECONDS: float = 0.8
 
     # 开放平台报表类接口（data/get 等）两次请求最小间隔（秒）。官方未公开精确 QPS，现场以 40100 为准调慢。

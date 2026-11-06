@@ -175,6 +175,12 @@ def page_plans():
     return _render_page("plans.html")
 
 
+@app.get("/team", response_class=HTMLResponse, include_in_schema=False)
+def page_team():
+    """团队管理。"""
+    return _render_page("team.html")
+
+
 @app.get("/reports", response_class=HTMLResponse, include_in_schema=False)
 def page_reports():
     """投放报表。"""

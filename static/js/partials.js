@@ -14,7 +14,7 @@
     {
       key: "advertisers",
       href: "/advertisers",
-      label: "子账户",
+      label: "账户授权",
       icon: '<path d="M3 21h18M5 21V8l7-4 7 4v13M9 21v-6h6v6"/>',
     },
     {
@@ -22,6 +22,14 @@
       href: "/plans",
       label: "计划与 ROI",
       icon: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    },
+    {
+      key: "team",
+      href: "/team",
+      label: "团队管理",
+      id: "nav-team",
+      hidden: true,
+      icon: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     },
     {
       key: "auth",
@@ -42,7 +50,7 @@
       ${items
         .map(
           (item) => `
-        <a class="nav-item ${item.key === active ? "active" : ""}" href="${item.href}">
+        <a class="nav-item ${item.key === active ? "active" : ""} ${item.hidden ? "hidden" : ""}" ${item.id ? `id="${item.id}"` : ""} href="${item.href}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${item.icon}</svg>
           <span>${item.label}</span>
         </a>`
@@ -73,21 +81,21 @@
     topbarRight.insertBefore(wrap, topbarRight.firstChild);
   }
   async function loadTopbarUser() {
+    let me = null;
     if (window.AdHelper && typeof window.AdHelper.refreshTopbarUser === "function") {
-      return window.AdHelper.refreshTopbarUser();
-    }
-    try {
-      const resp = await fetch("/api/auth/me");
-      const body = await resp.json();
-      if (body.code !== 0 || !body.data) return null;
-      const name = String(body.data.username || "");
-      if (window.AdHelper && typeof window.AdHelper.renderTopbarUser === "function") {
-        window.AdHelper.renderTopbarUser(name);
+      me = await window.AdHelper.refreshTopbarUser();
+    } else {
+      try {
+        const resp = await fetch("/api/auth/me");
+        const body = await resp.json();
+        if (body.code === 0 && body.data) me = body.data;
+      } catch (_) {
+        me = null;
       }
-      return body.data;
-    } catch (_) {
-      return null;
     }
+    const team = document.getElementById("nav-team");
+    if (team && me && me.username === "admin") team.classList.remove("hidden");
+    return me;
   }
   loadTopbarUser().catch(() => {});
 

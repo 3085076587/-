@@ -2,7 +2,6 @@
   const { el, toast, api, setBusy, refreshTokenPill, advertiserOptions, queryParam } =
     window.AdHelper;
   const COMMISSION_KEY = "ad_helper_plan_commission";
-  const REFUND_EXTRA = 0.05;
   const commissionTimers = {};
   let plansCache = [];
   let listMeta = null;
@@ -16,13 +15,23 @@
     return `${y}-${m}-${day}`;
   }
 
+  function syncPlanDates() {
+    const custom = el("plan-range").value === "custom";
+    document.querySelectorAll("#plan-custom-start, #plan-custom-end").forEach((node) => {
+      node.classList.toggle("hidden", !custom);
+    });
+  }
+
   function rangeDates() {
+    const key = el("plan-range").value || "today";
+    if (key === "custom") {
+      return { start: el("plan-start").value, end: el("plan-end").value, custom: true };
+    }
     const end = new Date();
     const start = new Date();
-    const key = el("plan-range").value || "today";
     if (key === "7") start.setDate(end.getDate() - 6);
     else if (key === "30") start.setDate(end.getDate() - 29);
-    return { start: localISODate(start), end: localISODate(end) };
+    return { start: localISODate(start), end: localISODate(end), custom: false };
   }
 
   function fmtMoney(v) {
@@ -97,25 +106,27 @@
     return n;
   }
 
-  function displayRefund(value) {
-    const n = refundRatio(value);
-    if (n == null) return null;
-    return Math.min(1, n + REFUND_EXTRA);
-  }
-
   function fmtRate(v) {
-    const n = displayRefund(v);
+    const n = refundRatio(v);
     if (n == null) return "-";
     return `${(n * 100).toFixed(2)}%`;
+  }
+
+  function actualRefundRatio(value) {
+    const text = String(value ?? "").replace("%", "").trim();
+    if (text === "") return 0;
+    const n = Number(text);
+    if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+    return n / 100;
   }
 
   function planProfit(item) {
     const pct = commissionPct(item);
     const cost = Number(item.stat_cost);
-    const roi = Number(item.pay_roi);
-    const refund = displayRefund(item.refund_rate_1h);
-    if (pct == null || !Number.isFinite(cost) || !Number.isFinite(roi) || refund == null) return null;
-    return cost * roi * (1 - refund) * (pct / 100) - cost;
+    const settle = Number(item.settle_amount);
+    const refund = actualRefundRatio(item.actual_refund_rate);
+    if (pct == null || !Number.isFinite(cost) || !Number.isFinite(settle) || refund == null) return null;
+    return settle * (1 - refund) * (pct / 100) - cost;
   }
 
   function planProfitRate(item) {
@@ -155,10 +166,10 @@
     if (!listMeta || !el("plan-hint")) return;
     const profits = plansCache.map(planProfit).filter((n) => n != null);
     const profitText = profits.length
-      ? `利润合计 ${fmtMoney(profits.reduce((sum, n) => sum + n, 0))}`
-      : "利润合计 -";
+      ? `预估利润合计 ${fmtMoney(profits.reduce((sum, n) => sum + n, 0))}`
+      : "预估利润合计 -";
     const scope = listMeta.note ? ` · ${listMeta.note}` : "";
-    el("plan-hint").textContent = `1小时内退款率已加 5%。利润率 = 利润 / 净成交金额。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}${scope}`;
+    el("plan-hint").textContent = `利润 = 净成交 × (1 − 实际退款率) × 佣金 − 消耗。已加载 ${listMeta.total} 条 · ${listMeta.start} ~ ${listMeta.end} · ${profitText}${scope}`;
   }
 
   function renderPlans(list) {
@@ -229,7 +240,15 @@
       renderPlans([]);
       return;
     }
-    const { start, end } = rangeDates();
+    const { start, end, custom } = rangeDates();
+    if (custom && (!start || !end)) {
+      toast("请选择开始和结束日期", "warn");
+      return;
+    }
+    if (custom && start > end) {
+      toast("开始日期不能晚于结束日期", "warn");
+      return;
+    }
     el("plan-hint").textContent = "正在拉取全域计划…";
     const qs = new URLSearchParams({
       advertiser_id: advertiserId,
@@ -363,7 +382,15 @@
     loadPlans().catch((err) => toast(err.message, "error"));
   });
   el("plan-range").addEventListener("change", () => {
+    syncPlanDates();
+    if (el("plan-range").value === "custom" && (!el("plan-start").value || !el("plan-end").value)) return;
     loadPlans().catch((err) => toast(err.message, "error"));
+  });
+  el("plan-start").addEventListener("change", () => {
+    if (el("plan-end").value) loadPlans().catch((err) => toast(err.message, "error"));
+  });
+  el("plan-end").addEventListener("change", () => {
+    if (el("plan-start").value) loadPlans().catch((err) => toast(err.message, "error"));
   });
 
   document.body.addEventListener("change", async (event) => {
@@ -846,6 +873,10 @@
   });
 
   (async () => {
+    const today = localISODate(new Date());
+    el("plan-start").value = today;
+    el("plan-end").value = today;
+    syncPlanDates();
     const selected = queryParam("advertiser_id") || "";
     await refreshTokenPill();
     await loadAdvertisers(selected);

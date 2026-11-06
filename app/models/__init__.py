@@ -8,6 +8,8 @@ from app.models.qianchuan_overview_daily import QianchuanOverviewDaily
 from app.models.qianchuan_product import QianchuanProduct
 from app.models.qianchuan_product_daily import QianchuanProductDaily
 from app.models.sys_user import SysUser
+from app.models.team_member_perm import TeamMemberPerm
+from app.models.team_shop_access import TeamShopAccess
 from app.models.workbench_session import WorkbenchSession
 
 __all__ = [
@@ -20,6 +22,7 @@ __all__ = [
     "QianchuanAccountDaily",
     "QianchuanOverviewDaily",
     "SysUser",
+    "TeamMemberPerm",
     "PlanCommission",
     "WorkbenchSession",
 ]

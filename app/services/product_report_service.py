@@ -20,12 +20,10 @@ from app.clients.oceanengine import OceanEngineApiError, OceanEngineClient
 from app.models.qianchuan_account_daily import QianchuanAccountDaily
 from app.models.qianchuan_product import QianchuanProduct
 from app.models.qianchuan_product_daily import QianchuanProductDaily, QianchuanProductSync
-from app.services.uni_plan_service import DEFAULT_COMMISSION_PCT, _num
+from app.services.plan_commission_sync import parse_commission_from_plan_name
+from app.services.uni_plan_service import _num
 
 logger = logging.getLogger("uvicorn.error")
-
-# 与计划页利润公式一致的退款率附加项。
-REFUND_EXTRA = 0.05
 
 # 商品维度指标（data/get 的 metrics）。金额单位是元。
 # 接口不认订单数/净成交字段时，自动退回核心三项。
@@ -116,13 +114,159 @@ def display_name(product_id: int, name: str | None) -> str:
     return f"商品…{pid[-6:]}"
 
 
+def refund_ratio(raw: Any) -> float:
+    """实际退款率转成 0~1。空当 0。字符串按百分数，数字小于等于 1 当比例。"""
+    if raw is None or raw == "":
+        return 0.0
+    text = str(raw).replace("%", "").strip()
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return 0.0
+    if isinstance(raw, str) or number > 1:
+        number = number / 100.0
+    if number < 0:
+        return 0.0
+    if number > 1:
+        return 1.0
+    return number
+
+
+def estimate_profit(
+    settle: Any,
+    cost: Any,
+    refund_ratio_value: Any,
+    commission_pct: float | None,
+) -> float | None:
+    """净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。没有佣金或没有净成交就不算。"""
+    if commission_pct is None or float(commission_pct) <= 0:
+        return None
+    if settle is None or settle == "":
+        return None
+    try:
+        settle_f = float(settle)
+        cost_f = float(cost or 0)
+    except (TypeError, ValueError):
+        return None
+    rate = refund_ratio(refund_ratio_value)
+    return settle_f * (1.0 - rate) * float(commission_pct) / 100.0 - cost_f
+
+
+def commission_from_saved_or_name(saved: Any, *names: str) -> float | None:
+    """手填佣金优先，否则从名称里的「佣金:xx%」解析，都没有返回 None。"""
+    try:
+        pct = float(saved)
+    except (TypeError, ValueError):
+        pct = 0.0
+    if pct > 0:
+        return round(pct, 2)
+    for name in names:
+        parsed = parse_commission_from_plan_name(name or "")
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def load_product_meta(
+    db: Session, advertiser_ids: list[int] | None = None
+) -> dict[tuple[int, int], dict[str, Any]]:
+    """(账户, 商品) → 名称、手填佣金、实际退款率。"""
+    stmt = select(QianchuanProduct)
+    if advertiser_ids:
+        stmt = stmt.where(QianchuanProduct.advertiser_id.in_(list(advertiser_ids)))
+    out: dict[tuple[int, int], dict[str, Any]] = {}
+    for row in db.scalars(stmt).all():
+        saved = float(row.commission_pct) if row.commission_pct is not None else None
+        if saved is not None and saved <= 0:
+            saved = None
+        refund = None if row.actual_refund_rate is None else float(row.actual_refund_rate)
+        out[(int(row.advertiser_id), int(row.product_id))] = {
+            "name": row.product_name or "",
+            "commission": saved,
+            "refund": refund,
+        }
+    return out
+
+
+def profit_of_product(
+    *,
+    settle: Any,
+    cost: Any,
+    meta: dict[str, Any] | None,
+    plan_name: str = "",
+    product_name: str = "",
+    user_commission: float | None = None,
+) -> float | None:
+    info = meta or {}
+    pct = commission_from_saved_or_name(
+        user_commission if user_commission is not None else info.get("commission"),
+        plan_name,
+        product_name,
+        str(info.get("name") or ""),
+    )
+    return estimate_profit(settle, cost, info.get("refund"), pct)
+
+
+def sum_plan_product_profits(
+    plans: list[dict[str, Any]],
+    user_by_ad: dict[int, float],
+    meta_map: dict[tuple[int, int], dict[str, Any]],
+    advertiser_id: int,
+) -> float:
+    """一个账户里，每条有商品的计划单独算完再相加。"""
+    total = 0.0
+    for plan in plans:
+        raw_pid = plan.get("product_id")
+        try:
+            pid = int(raw_pid) if raw_pid not in (None, "", 0) else 0
+        except (TypeError, ValueError):
+            pid = 0
+        if not pid:
+            continue
+        ad_id = int(plan.get("ad_id") or 0)
+        meta = meta_map.get((int(advertiser_id), pid))
+        value = profit_of_product(
+            settle=plan.get("settle_amount"),
+            cost=plan.get("stat_cost"),
+            meta=meta,
+            plan_name=str(plan.get("ad_name") or ""),
+            product_name=str(plan.get("product_name") or ""),
+            user_commission=user_by_ad.get(ad_id),
+        )
+        if value is not None:
+            total += value
+    return round(total, 2)
+
+
+def save_advertiser_product_commission(
+    db: Session,
+    advertiser_id: int,
+    product_id: int,
+    product_name: str,
+    commission_pct: float | None,
+) -> None:
+    """写入这个账户下该商品的手填佣金。空值清掉，之后改用名称。"""
+    name = (product_name or "").strip()
+    stmt = mysql_insert(QianchuanProduct).values(
+        advertiser_id=int(advertiser_id),
+        product_id=int(product_id),
+        product_name=name,
+        commission_pct=commission_pct,
+    )
+    updates = {"commission_pct": stmt.inserted.commission_pct}
+    if name:
+        updates["product_name"] = stmt.inserted.product_name
+    db.execute(stmt.on_duplicate_key_update(**updates))
+    db.commit()
+
+
 def profit_basis(
     cost: float,
     pay_amount: float,
     pay_roi: float | None,
     refund_rate_1h: float | None,
 ) -> tuple[float, float] | None:
-    """利润里跟佣金无关的部分。退款率只用接口给的 1 小时退货率，再加 5%。"""
+    """利润里跟佣金无关的部分。退款率用接口给的 1 小时退货率。"""
     if cost <= 0 and not pay_amount:
         return None
     roi = pay_roi
@@ -131,7 +275,7 @@ def profit_basis(
     rate = _norm_rate(refund_rate_1h)
     if roi is None or rate is None:
         return None
-    keep = 1.0 - min(1.0, rate + REFUND_EXTRA)
+    keep = 1.0 - min(1.0, rate)
     return float(cost) * float(roi) * keep, float(cost)
 
 
@@ -142,7 +286,7 @@ def product_profit(
     refund_rate_1h: float | None,
     commission_pct: float,
 ) -> float | None:
-    """商品口径利润。退款率用已入库的 1 小时退货率，再加 5%。"""
+    """商品口径利润。退款率用已入库的 1 小时退货率。"""
     parts = profit_basis(cost, pay_amount, pay_roi, refund_rate_1h)
     if parts is None:
         return None
@@ -151,9 +295,9 @@ def product_profit(
 
 
 def resolve_commission_pct(commission_map: dict[int, float], product_id: int) -> float:
-    """库里该商品佣金为空或 0 时按 60%。"""
+    """库里该商品有手填佣金就返回，没有返回 0。名称解析由调用方另做。"""
     pct = float(commission_map.get(int(product_id), 0) or 0)
-    return pct if pct > 0 else DEFAULT_COMMISSION_PCT
+    return pct if pct > 0 else 0.0
 
 
 def rollup_today_rows(
@@ -169,35 +313,28 @@ def rollup_today_rows(
                 "name": display_name(pid, row.get("product_name")),
                 "cost": 0.0,
                 "sales": 0,
-                "basis": 0.0,
-                "profit_cost": 0.0,
+                "settle": 0.0,
+                "settle_known": False,
             },
         )
         if row.get("product_name"):
             agg["name"] = display_name(pid, row.get("product_name"))
         agg["cost"] += float(row.get("cost") or 0)
         agg["sales"] += int(row.get("order_count") or 0)
-        parts = profit_basis(
-            float(row.get("cost") or 0),
-            float(row.get("pay_amount") or 0),
-            row.get("pay_roi"),
-            row.get("refund_rate_1h"),
-        )
-        if parts is not None:
-            basis, used_cost = parts
-            agg["basis"] += basis
-            agg["profit_cost"] += used_cost
+        if row.get("settle_amount") not in (None, ""):
+            agg["settle"] += float(row.get("settle_amount") or 0)
+            agg["settle_known"] = True
     out: dict[int, dict[str, Any]] = {}
     for pid, agg in bucket.items():
-        pct = resolve_commission_pct(commission_map, pid)
+        pct = commission_from_saved_or_name(commission_map.get(pid), agg["name"])
+        profit = estimate_profit(agg["settle"] if agg["settle_known"] else None, agg["cost"], None, pct)
         out[pid] = {
             "name": agg["name"],
             "cost": round(agg["cost"], 2),
             "sales": int(agg["sales"]),
-            "basis": agg["basis"],
-            "profit_cost": agg["profit_cost"],
-            "commission": pct,
-            "profit": round(agg["basis"] * pct / 100.0 - agg["profit_cost"], 2),
+            "settle": agg["settle"] if agg["settle_known"] else None,
+            "commission": pct or 0,
+            "profit": round(profit, 2) if profit is not None else 0.0,
         }
     return out
 
@@ -458,7 +595,7 @@ async def sync_day(
 
 
 def product_commissions(db: Session) -> dict[int, float]:
-    """商品维度佣金（同一商品多账户共用），未配置默认 60%。"""
+    """商品维度已手填的佣金。没填的不在这里，计算时再看名称。"""
     out: dict[int, float] = {}
     for row in db.scalars(select(QianchuanProduct)).all():
         pct = float(row.commission_pct or 0)
@@ -624,18 +761,26 @@ def person_aggregate_from_db(
     start: str,
     end: str,
     commission_map: dict[int, float],
-) -> dict[str, Any] | None:
-    """多人多账户区间利润：日表齐全时一次读库聚合，不打接口。"""
-    if not range_fully_synced(db, advertiser_ids, start, end):
-        return None
+    name_commission: dict[tuple[int, int], float] | None = None,
+) -> dict[str, Any]:
+    """多人多账户区间利润：只加日表里已有的商品。缺的日子先按 0，不打接口。"""
+    complete = range_fully_synced(db, advertiser_ids, start, end)
     profit = 0.0
     plan_cost = 0.0
     plan_count = 0
     products: dict[int, dict[str, Any]] = {}
     for adv_id in advertiser_ids:
-        block = stats_from_db(db, int(adv_id), start, end, commission_map)
+        block = stats_from_db(
+            db,
+            int(adv_id),
+            start,
+            end,
+            commission_map,
+            require_coverage=False,
+            name_commission=name_commission,
+        )
         if block is None:
-            return None
+            continue
         profit += float(block["profit"])
         plan_cost += float(block["plan_cost"])
         plan_count += int(block["plan_count"])
@@ -658,6 +803,7 @@ def person_aggregate_from_db(
         "failed_advertisers": 0,
         "from_cache": False,
         "source": "db_batch",
+        "complete": complete,
     }
 
 
@@ -708,19 +854,24 @@ def stats_from_db(
     start: str,
     end: str,
     commission_map: dict[int, float],
+    *,
+    require_coverage: bool = True,
+    name_commission: dict[tuple[int, int], float] | None = None,
 ) -> dict[str, Any] | None:
-    """历史区间日数据齐全时直接 SQL 聚合，零接口调用。未覆盖返回 None。"""
-    if not _covered(db, advertiser_id, start, end):
+    """历史区间直接 SQL 聚合，零接口调用。
+
+    require_coverage 为真且该账户还有没标记的日子时返回 None，交给补拉。
+    总览读库传 False：有哪天就算哪天，缺的日子先按 0。
+    """
+    if require_coverage and not _covered(db, advertiser_id, start, end):
         return None
-    account_rates = account_refund_rates(db, start, end, [advertiser_id])
+    del commission_map
+    meta_map = load_product_meta(db, [advertiser_id])
     rows = db.execute(
         select(
-            QianchuanProductDaily.stat_date,
             QianchuanProductDaily.product_id,
             QianchuanProductDaily.cost,
-            QianchuanProductDaily.pay_amount,
-            QianchuanProductDaily.pay_roi,
-            QianchuanProductDaily.refund_rate_1h,
+            QianchuanProductDaily.settle_amount,
             QianchuanProductDaily.order_count,
         ).where(
             QianchuanProductDaily.advertiser_id == advertiser_id,
@@ -728,29 +879,25 @@ def stats_from_db(
             QianchuanProductDaily.stat_date <= end,
         )
     ).all()
-    names = {
-        int(p.product_id): p.product_name
-        for p in db.scalars(
-            select(QianchuanProduct).where(QianchuanProduct.advertiser_id == advertiser_id)
-        ).all()
-    }
     products: dict[int, dict[str, Any]] = {}
     profit = 0.0
     cost_total = 0.0
-    for stat_date, pid, cost, pay, roi, refund_rate, orders in rows:
+    for pid, cost, settle, orders in rows:
         cost = float(cost or 0)
-        pay = float(pay or 0)
-        roi_v = float(roi) if roi is not None else None
-        refund_v = refund_for_product_row(refund_rate, advertiser_id, stat_date, account_rates)
-        pct = commission_map.get(int(pid), DEFAULT_COMMISSION_PCT)
-        value = product_profit(cost, pay, roi_v, refund_v, pct)
+        meta = meta_map.get((int(advertiser_id), int(pid)))
+        value = profit_of_product(
+            settle=settle,
+            cost=cost,
+            meta=meta,
+            user_commission=None if name_commission is None else name_commission.get((int(advertiser_id), int(pid))),
+        )
         if value is not None:
             profit += value
         cost_total += cost
         agg = products.setdefault(
             int(pid),
             {
-                "name": display_name(int(pid), names.get(int(pid))),
+                "name": display_name(int(pid), (meta or {}).get("name")),
                 "cost": 0.0,
                 "sales": 0,
             },
@@ -778,14 +925,8 @@ def aggregate_products(
     products: dict[int, dict[str, Any]] = {}
     for row in rows:
         pid = int(row["product_id"])
-        pct = commission_map.get(pid, DEFAULT_COMMISSION_PCT)
-        value = product_profit(
-            float(row["cost"]),
-            float(row["pay_amount"]),
-            row["pay_roi"],
-            row.get("refund_rate_1h"),
-            pct,
-        )
+        pct = commission_from_saved_or_name(commission_map.get(pid), str(row.get("product_name") or ""))
+        value = estimate_profit(row.get("settle_amount"), row.get("cost"), None, pct)
         if value is not None:
             profit += value
         cost_total += float(row["cost"])
@@ -812,21 +953,20 @@ def profit_by_day(
     start: str,
     end: str,
     commission_map: dict[int, float] | None = None,
+    name_commission: dict[tuple[int, int], float] | None = None,
 ) -> dict[str, float]:
     """这些账户每一天的商品利润。按当天每一行单独计算再相加，不把多天揉成一个 ROI。"""
     if not advertiser_ids:
         return {}
-    commissions = product_commissions(db) if commission_map is None else commission_map
-    account_rates = account_refund_rates(db, start, end, advertiser_ids)
+    del commission_map
+    meta_map = load_product_meta(db, advertiser_ids)
     rows = db.execute(
         select(
             QianchuanProductDaily.stat_date,
             QianchuanProductDaily.advertiser_id,
             QianchuanProductDaily.product_id,
             QianchuanProductDaily.cost,
-            QianchuanProductDaily.pay_amount,
-            QianchuanProductDaily.pay_roi,
-            QianchuanProductDaily.refund_rate_1h,
+            QianchuanProductDaily.settle_amount,
         ).where(
             QianchuanProductDaily.advertiser_id.in_(advertiser_ids),
             QianchuanProductDaily.stat_date >= start,
@@ -834,17 +974,14 @@ def profit_by_day(
         )
     ).all()
     bag: dict[str, float] = defaultdict(float)
-    for stat_date, adv_id, pid, cost, pay, roi, refund_rate in rows:
-        cost_f = float(cost or 0)
-        pay_f = float(pay or 0)
-        roi_v = float(roi) if roi is not None else None
-        refund_v = refund_for_product_row(refund_rate, int(adv_id), stat_date, account_rates)
-        value = product_profit(
-            cost_f,
-            pay_f,
-            roi_v,
-            refund_v,
-            resolve_commission_pct(commissions, int(pid)),
+    for stat_date, adv_id, pid, cost, settle in rows:
+        value = profit_of_product(
+            settle=settle,
+            cost=cost,
+            meta=meta_map.get((int(adv_id), int(pid))),
+            user_commission=None
+            if name_commission is None
+            else name_commission.get((int(adv_id), int(pid))),
         )
         if value is None:
             continue
@@ -853,36 +990,38 @@ def profit_by_day(
     return {day: round(total, 2) for day, total in bag.items()}
 
 
-def profits_by_advertiser(db: Session, start: str, end: str) -> dict[int, float]:
-    """按店铺把区间内各商品利润加总。只读日表，不打接口。佣金空或 0 按 60%。"""
-    commission_map = product_commissions(db)
-    account_rates = account_refund_rates(db, start, end)
+def profits_by_advertiser(
+    db: Session,
+    start: str,
+    end: str,
+    name_commission: dict[tuple[int, int], float] | None = None,
+) -> dict[int, float]:
+    """按店铺把区间内各商品利润加总。只读日表，不打接口。
+
+    name_commission 是 (账户, 商品) → 计划上的佣金。手填和计划名称都走这里，
+    商品自己没有佣金时用它，没有的行不计入。
+    """
+    meta_map = load_product_meta(db)
     rows = db.execute(
         select(
             QianchuanProductDaily.advertiser_id,
-            QianchuanProductDaily.stat_date,
             QianchuanProductDaily.product_id,
             QianchuanProductDaily.cost,
-            QianchuanProductDaily.pay_amount,
-            QianchuanProductDaily.pay_roi,
-            QianchuanProductDaily.refund_rate_1h,
+            QianchuanProductDaily.settle_amount,
         ).where(
             QianchuanProductDaily.stat_date >= start,
             QianchuanProductDaily.stat_date <= end,
         )
     ).all()
     bag: dict[int, float] = {}
-    for adv, stat_date, pid, cost, pay, roi, refund_rate in rows:
-        cost_f = float(cost or 0)
-        pay_f = float(pay or 0)
-        roi_v = float(roi) if roi is not None else None
-        refund_v = refund_for_product_row(refund_rate, int(adv), stat_date, account_rates)
-        value = product_profit(
-            cost_f,
-            pay_f,
-            roi_v,
-            refund_v,
-            resolve_commission_pct(commission_map, int(pid)),
+    for adv, pid, cost, settle in rows:
+        value = profit_of_product(
+            settle=settle,
+            cost=cost,
+            meta=meta_map.get((int(adv), int(pid))),
+            user_commission=None
+            if name_commission is None
+            else name_commission.get((int(adv), int(pid))),
         )
         if value is None:
             continue

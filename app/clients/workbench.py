@@ -81,7 +81,7 @@ def _roi(value: Any) -> float | None:
 
 
 def _rate(value: Any) -> float | None:
-    """工作台退款率是「10.21%」。页面会再加 5 个百分点，这里先换成 0~1。"""
+    """工作台退款率是「10.21%」，这里换成 0~1。"""
     text = str(value or "").strip().replace(",", "")
     if not text or text in {"-", "--"}:
         return None

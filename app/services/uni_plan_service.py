@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -15,6 +16,8 @@ from app.core.exceptions import AppError, OceanEngineApiError
 from app.models.plan_commission import PlanCommission
 from app.schemas.plan import UpdateRoiIn, UpdateRoiOut, UpdateStatusIn
 from app.services import plan_commission_sync, reminder_service, token_store
+
+logger = logging.getLogger("uvicorn.error")
 
 PLAN_FIELDS = [
     "stat_cost",
@@ -99,13 +102,7 @@ async def list_uni_plans(
     start_time = f"{start} 00:00:00"
     end_time = f"{end} 23:59:59"
     client = await token_store.build_client(db)
-    saved_commission = {
-        int(row.ad_id): float(row.commission_pct)
-        for row in db.scalars(
-            select(PlanCommission).where(PlanCommission.advertiser_id == advertiser_id)
-        ).all()
-        if float(row.commission_pct) > 0
-    }
+    saved_commission = plan_commission_sync.user_saved_commissions(db, advertiser_id)
 
     plans: list[dict[str, Any]] = []
     page = 1
@@ -139,14 +136,22 @@ async def list_uni_plans(
             product_name = ""
             product_image = ""
             product_id = None
-            if products and isinstance(products[0], dict):
-                product_name = str(products[0].get("product_name") or "")
-                product_image = str(products[0].get("product_image") or "")
-                raw_pid = products[0].get("product_id")
+            product_ids: list[int] = []
+            for prod in products:
+                if not isinstance(prod, dict):
+                    continue
+                if not product_name:
+                    product_name = str(prod.get("product_name") or "")
+                    product_image = str(prod.get("product_image") or "")
+                raw_pid = prod.get("product_id")
                 try:
-                    product_id = int(raw_pid) if raw_pid not in (None, "") else None
+                    pid = int(raw_pid) if raw_pid not in (None, "") else 0
                 except (TypeError, ValueError):
-                    product_id = None
+                    pid = 0
+                if pid and pid not in product_ids:
+                    product_ids.append(pid)
+            if product_ids:
+                product_id = product_ids[0]
             ad_id = int(ad_info.get("id") or 0)
             if not ad_id:
                 continue
@@ -162,6 +167,7 @@ async def list_uni_plans(
                     "ad_id": ad_id,
                     "ad_name": ad_name,
                     "product_id": product_id,
+                    "product_ids": product_ids,
                     "product_name": product_name,
                     "product_image": product_image,
                     "opt_status": str(ad_info.get("opt_status") or ""),
@@ -237,17 +243,112 @@ async def list_uni_plans(
     }
 
 
+def apply_local_commission(db: Session, advertiser_id: int, plans: list[dict[str, Any]]) -> None:
+    """用手填佣金和计划名称补佣金，不再为了佣金去打开放平台。"""
+    saved = {
+        int(row.ad_id): float(row.commission_pct)
+        for row in db.scalars(
+            select(PlanCommission).where(PlanCommission.advertiser_id == advertiser_id)
+        ).all()
+        if float(row.commission_pct) > 0
+    }
+    for item in plans:
+        ad_id = int(item.get("ad_id") or 0)
+        name = str(item.get("ad_name") or "")
+        item["commission_pct"] = plan_commission_sync.resolve_plan_commission_pct(name, ad_id, saved)
+        item["commission_format_warning"] = plan_commission_sync.commission_name_format_warning(name)
+
+
+def _plan_stats_blank(plan: dict[str, Any]) -> bool:
+    return (
+        float(plan.get("stat_cost") or 0) == 0
+        and float(plan.get("pay_amount") or 0) == 0
+        and float(plan.get("settle_amount") or 0) == 0
+    )
+
+
+def apply_product_stats(plans: list[dict[str, Any]], rows: list[dict[str, Any]]) -> None:
+    """计划列表没有消耗时，用商品报表的金额补上。金额已经是元。"""
+    by_pid: dict[int, dict[str, Any]] = {}
+    for row in rows or []:
+        try:
+            pid = int(row.get("product_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid:
+            by_pid[pid] = row
+    for plan in plans:
+        if not _plan_stats_blank(plan):
+            continue
+        raw_ids = plan.get("product_ids") or []
+        ids: list[int] = []
+        for raw in raw_ids:
+            try:
+                pid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if pid and pid not in ids:
+                ids.append(pid)
+        if not ids and plan.get("product_id"):
+            try:
+                ids = [int(plan["product_id"])]
+            except (TypeError, ValueError):
+                ids = []
+        chosen = [by_pid[pid] for pid in ids if pid in by_pid]
+        if not chosen:
+            continue
+        cost = sum(float(row.get("cost") or 0) for row in chosen)
+        pay = sum(float(row.get("pay_amount") or 0) for row in chosen)
+        settle_vals = [row.get("settle_amount") for row in chosen]
+        settle = sum(float(value or 0) for value in settle_vals) if all(value is not None for value in settle_vals) else None
+        plan["stat_cost"] = round(cost, 2)
+        plan["pay_amount"] = round(pay, 2)
+        plan["pay_roi"] = round(pay / cost, 4) if cost > 0 else None
+        if settle is not None:
+            plan["settle_amount"] = round(settle, 2)
+            plan["settle_roi"] = round(settle / cost, 4) if cost > 0 else None
+        weighted = 0.0
+        weight = 0.0
+        for row in chosen:
+            rate = row.get("refund_rate_1h")
+            if rate is None:
+                continue
+            piece = float(row.get("pay_amount") or 0) or float(row.get("cost") or 0) or 1.0
+            weighted += float(rate) * piece
+            weight += piece
+        if weight > 0:
+            plan["refund_rate_1h"] = round(weighted / weight, 6)
+        plan["stats_from_product"] = True
+
+
+async def attach_product_stats(
+    db: Session,
+    advertiser_id: int,
+    start: str,
+    end: str,
+    plans: list[dict[str, Any]],
+) -> None:
+    """计划上没有金额时，拉一次商品报表补上。拉失败就保持原样。"""
+    if not plans or not any(_plan_stats_blank(plan) for plan in plans):
+        return
+    from app.services import product_report_service
+
+    client = await token_store.build_client(db)
+    try:
+        rows = await product_report_service.fetch_products(client, advertiser_id, start, end)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("计划金额改用商品报表失败 advertiser=%s：%s", advertiser_id, exc)
+        return
+    apply_product_stats(plans, rows)
+
+
 def save_plan_commission(
     db: Session,
     advertiser_id: int,
     ad_id: int,
     commission_pct: float | None,
 ) -> dict[str, Any]:
-    """佣金为空或 0 时删掉记录，页面上不显示利润。
-
-    计划名里带 (佣金:xx%) 时，以名称解析为准；定时同步会覆盖手填值。
-    名称里没有佣金标记时，手填值保留。
-    """
+    """佣金为空或 0 时删掉手填记录，之后改用计划名称里的佣金。"""
     row = db.scalar(
         select(PlanCommission).where(
             PlanCommission.advertiser_id == advertiser_id,
@@ -256,15 +357,21 @@ def save_plan_commission(
     )
     pct = float(commission_pct or 0)
     if pct <= 0:
-        if row is not None:
+        if row is not None and int(row.filled_by_user or 0) == 1:
             db.delete(row)
             db.commit()
         return {"advertiser_id": advertiser_id, "ad_id": ad_id, "commission_pct": None}
     if row is None:
-        row = PlanCommission(advertiser_id=advertiser_id, ad_id=ad_id, commission_pct=pct)
+        row = PlanCommission(
+            advertiser_id=advertiser_id,
+            ad_id=ad_id,
+            commission_pct=pct,
+            filled_by_user=1,
+        )
         db.add(row)
     else:
         row.commission_pct = pct
+        row.filled_by_user = 1
     db.commit()
     return {"advertiser_id": advertiser_id, "ad_id": ad_id, "commission_pct": pct}
 

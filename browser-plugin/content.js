@@ -96,12 +96,36 @@
     return { commission: "", refund: "" };
   }
 
+  function advertiserId() {
+    try {
+      return new URL(location.href).searchParams.get("aavid") || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function syncProfit(planId) {
+    const saved = recordOf(planId);
+    const plan = pagePlans.find((item) => item.id === planId);
+    try {
+      chrome.runtime.sendMessage({
+        type: "sync-profit",
+        advertiserId: advertiserId(),
+        adId: planId,
+        productName: (plan && plan.title) || "",
+        commission: saved.commission || "",
+        refund: saved.refund || "",
+      });
+    } catch (_) {}
+  }
+
   function saveField(planId, field, value, after) {
     const current = recordOf(planId);
     current[field] = String(value ?? "").trim();
     if (!current.commission && !current.refund) delete roiMap[planId];
     else roiMap[planId] = current;
     storageSet({ [ROI_KEY]: roiMap });
+    syncProfit(planId);
     pagePlans.forEach((plan) => {
       if (plan.id !== planId) return;
       plan.saved = { commission: current.commission || "", refund: current.refund || "" };

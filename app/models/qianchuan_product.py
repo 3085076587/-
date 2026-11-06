@@ -27,7 +27,7 @@ class QianchuanProduct(Base):
     product_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True, comment="商品ID")
     product_name: Mapped[str] = mapped_column(String(512), nullable=False, default="", comment="商品标题")
     commission_pct: Mapped[float | None] = mapped_column(
-        Numeric(8, 4), nullable=True, comment="商品佣金%，空则按默认 60"
+        Numeric(8, 4), nullable=True, comment="用户填写的商品佣金%，空则从名称解析，都没有不算利润"
     )
     actual_refund_rate: Mapped[float | None] = mapped_column(
         Numeric(8, 6), nullable=True, comment="用户填写的实际退款率（0~1），空表示未填"

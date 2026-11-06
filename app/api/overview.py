@@ -10,7 +10,7 @@ from app.api.deps import get_db
 from app.core.exceptions import AppError
 from app.core.response import ok
 from app.services import overview_service, product_report_service
-from app.services.account_access import current_username, is_admin
+from app.services.account_access import current_username, is_admin, visible_advertiser_ids
 from app.services.dashboard_cache import get_progress
 
 router = APIRouter(tags=["Overview"])

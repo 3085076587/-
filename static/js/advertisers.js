@@ -1,7 +1,6 @@
 (() => {
   const { el, toast, api, setBusy, refreshTokenPill } = window.AdHelper;
 
-  const REFUND_EXTRA = 0.05;
   let rowsCache = [];
   let sortKey = "stat_cost";
   let sortAsc = false;
@@ -29,14 +28,8 @@
     return n;
   }
 
-  function displayRefund(value) {
-    const n = refundRatio(value);
-    if (n == null) return null;
-    return Math.min(1, n + REFUND_EXTRA);
-  }
-
   function fmtRate(v) {
-    const n = displayRefund(v);
+    const n = refundRatio(v);
     if (n == null) return "-";
     return `${(n * 100).toFixed(2)}%`;
   }
@@ -111,19 +104,38 @@
     }
   }
 
+  function totalProfit(rows) {
+    let has = false;
+    let sum = 0;
+    for (const item of rows || []) {
+      const n = Number(item && item.profit);
+      if (!Number.isFinite(n)) continue;
+      has = true;
+      sum += n;
+    }
+    if (!has) return null;
+    return Math.round((sum + Number.EPSILON) * 100) / 100;
+  }
+
   function renderOverview(ov) {
     const data = ov || {};
     el("ov-cost").textContent = fmtMoney(data.stat_cost);
+    el("ov-profit").textContent = fmtMoney(totalProfit(rowsCache));
     el("ov-pay").textContent = fmtMoney(data.pay_amount);
     el("ov-roi").textContent = fmtRoi(data.pay_roi);
     el("ov-settle").textContent = fmtMoney(data.settle_amount);
     el("ov-settle-roi").textContent = fmtRoi(data.settle_roi);
   }
 
+  function groupOf(item) {
+    const match = String(item.advertiser_name || "").match(/\(([^)]+)\)/);
+    return match ? match[1].trim() : "";
+  }
+
   function fuzzyHit(item, keyword) {
     const q = String(keyword || "").trim().toLowerCase();
     if (!q) return true;
-    const hay = `${item.advertiser_name || ""} ${item.advertiser_id || ""}`.toLowerCase();
+    const hay = `${item.advertiser_name || ""} ${item.advertiser_id || ""} ${groupOf(item)}`.toLowerCase();
     if (hay.includes(q)) return true;
     let i = 0;
     for (const ch of hay) {
@@ -147,6 +159,13 @@
       })
       .slice();
     if (!sortKey) return list;
+    if (sortKey === "group") {
+      list.sort((a, b) => {
+        const cmp = groupOf(a).localeCompare(groupOf(b), "zh");
+        return sortAsc ? cmp : -cmp;
+      });
+      return list;
+    }
     list.sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -172,7 +191,7 @@
     const tbody = el("advertiser-tbody");
     if (!list.length) {
       const emptyText = rowsCache.length ? "没有匹配的账户" : "暂无子账户，请先同步";
-      tbody.innerHTML = `<tr><td colspan="10" class="empty">${emptyText}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11" class="empty">${emptyText}</td></tr>`;
       paintSortIndicators();
       const count = el("account-count");
       if (count) count.textContent = rowsCache.length ? `显示 0 / 共 ${rowsCache.length} 个` : "共 0 个";
@@ -181,11 +200,17 @@
     tbody.innerHTML = list
       .map((item) => {
         const name = item.advertiser_name || "未命名";
+        const group = groupOf(item);
+        const groupText = group
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
         return `<tr>
           <td>
             <div class="cell-title">${name}</div>
             <div class="cell-sub mono">ID: ${item.advertiser_id}</div>
           </td>
+          <td>${group ? `<span class="tag-group">${groupText}</span>` : "-"}</td>
           <td><span class="tag-active">${item.status || "-"}</span></td>
           <td>${fmtMoney(item.stat_cost)}</td>
           <td>${fmtRoi(item.pay_roi)}</td>
@@ -279,7 +304,7 @@
       if (profitHint) {
         profitHint.textContent = data.profit_note
           ? data.profit_note
-          : "利润 = 消耗 × 支付ROI × (1 − 退款率 − 5%) × 佣金 − 消耗。今天是该店铺各条计划的利润相加，和计划页同一笔算法，没填佣金的计划不计入。10月1日之前没有商品日数据。";
+          : "利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。今天用 Redis 里各商品相加，昨天及以前用数据库里的商品日数据相加。手填佣金优先，没有再用名称，都没有不计入。列表上的退货率是工作台的 1 小时退货率。";
       }
       if (data.profit_note && String(data.profit_note).indexOf("没有10月份以前的数据") >= 0) {
         toast(data.profit_note, "warn");

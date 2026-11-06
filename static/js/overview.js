@@ -15,6 +15,14 @@
   let fillingPeople = false;
   const charts = {};
   const chartRows = {};
+  const TREND_STORE = "ad_helper_overview_trend_v1";
+  const TREND_SERIES = [
+    { key: "cost", name: "总消耗", axis: "money", color: "#3b82f6" },
+    { key: "profit", name: "预估利润", axis: "money", color: "#22c55e" },
+    { key: "profit_rate", name: "预估总利润率", axis: "rate", color: "#7c3aed" },
+    { key: "pay_amount", name: "用户实际支付金额", axis: "money", color: "#f97316" },
+    { key: "settle_amount", name: "净成交金额", axis: "money", color: "#0d9488" },
+  ];
 
   function localISODate(d) {
     const y = d.getFullYear();
@@ -68,7 +76,6 @@
     if (!Number.isFinite(n) || n < 0) return "-";
     if (n > 1 && n <= 100) n /= 100;
     if (n > 1) return "-";
-    n = Math.min(1, n + 0.05);
     return `${(n * 100).toFixed(2)}%`;
   }
 
@@ -79,8 +86,109 @@
     });
   }
 
+  function loadTrendPicks() {
+    const raw = localStorage.getItem(TREND_STORE);
+    if (raw == null) return ["cost", "profit"];
+    try {
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data)) return ["cost", "profit"];
+      const allow = new Set(TREND_SERIES.map((item) => item.key));
+      return data.filter((key) => allow.has(key));
+    } catch (_) {
+      return ["cost", "profit"];
+    }
+  }
+
+  function initTrendPicks() {
+    const box = el("trend-picks");
+    const picked = new Set(loadTrendPicks());
+    box.innerHTML = TREND_SERIES.map(
+      (item) =>
+        `<label><input type="checkbox" data-trend="${item.key}"${picked.has(item.key) ? " checked" : ""}>${item.name}</label>`
+    ).join("");
+    box.addEventListener("change", () => {
+      const keys = [...box.querySelectorAll("input:checked")].map((node) => node.dataset.trend);
+      localStorage.setItem(TREND_STORE, JSON.stringify(keys));
+      renderDailyTrend();
+    });
+  }
+
+  function trendTip(value, axis) {
+    if (value == null || value === "") return "-";
+    if (axis === "rate") return `${(Number(value) * 100).toFixed(2)}%`;
+    return "¥" + money(value);
+  }
+
+  function renderDailyTrend() {
+    const chart = charts["chart-daily"];
+    if (!chart) return;
+    const rows = (summary && summary.daily_trend) || [];
+    const picked = new Set(loadTrendPicks());
+    const selected = TREND_SERIES.filter((item) => picked.has(item.key));
+    const hasMoney = selected.some((item) => item.axis === "money");
+    const hasRate = selected.some((item) => item.axis === "rate");
+    const yAxis = [];
+    let moneyIndex = 0;
+    let rateIndex = 0;
+    if (hasMoney || !hasRate) {
+      yAxis.push({
+        type: "value",
+        name: "元",
+        axisLabel: { formatter: (value) => money(value) },
+      });
+    }
+    if (hasRate) {
+      rateIndex = yAxis.length;
+      if (!hasMoney) moneyIndex = rateIndex;
+      yAxis.push({
+        type: "value",
+        name: "预估利润率",
+        axisLabel: { formatter: (value) => `${(Number(value) * 100).toFixed(0)}%` },
+        splitLine: { show: !hasMoney },
+      });
+    }
+    const series = selected.map((item) => ({
+      name: item.name,
+      type: "line",
+      smooth: true,
+      showSymbol: rows.length <= 14,
+      connectNulls: false,
+      yAxisIndex: item.axis === "rate" ? rateIndex : moneyIndex,
+      data: rows.map((row) => (row[item.key] == null ? null : Number(row[item.key]))),
+      itemStyle: { color: item.color },
+      lineStyle: { width: 2, color: item.color },
+    }));
+    chart.setOption(
+      {
+        tooltip: {
+          trigger: "axis",
+          formatter(params) {
+            const list = Array.isArray(params) ? params : [params];
+            if (!list.length) return "";
+            const index = list[0].dataIndex;
+            const head = (rows[index] && rows[index].date) || list[0].axisValue;
+            const lines = list.map((point) => {
+              const spec = selected[point.seriesIndex] || { axis: "money" };
+              return `${point.marker}${point.seriesName} ${trendTip(point.value, spec.axis)}`;
+            });
+            return [head, ...lines].join("<br>");
+          },
+        },
+        legend: { top: 0, selectedMode: false, data: selected.map((item) => item.name) },
+        grid: { left: 72, right: hasMoney && hasRate ? 64 : 24, top: 36, bottom: 40 },
+        xAxis: {
+          type: "category",
+          data: rows.map((row) => String(row.date || "").slice(5)),
+        },
+        yAxis,
+        series: series.length ? series : [{ type: "line", data: [] }],
+      },
+      true
+    );
+  }
+
   function initCharts() {
-    ["chart-cost", "chart-profit", "chart-product-cost", "chart-product-sales"].forEach((id) => {
+    ["chart-daily", "chart-cost", "chart-profit", "chart-product-cost", "chart-product-sales"].forEach((id) => {
       charts[id] = echarts.init(el(id));
     });
     window.addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
@@ -105,8 +213,8 @@
       return;
     }
     const val = window.prompt(
-      `商品「${item.name}」佣金百分比（未配置时默认 60）：`,
-      item.commission || 60
+      `商品「${item.name}」佣金百分比：`,
+      item.commission || ""
     );
     if (val === null) return;
     const pct = parseFloat(val);
@@ -226,16 +334,17 @@
     el("kpi-settle-roi").textContent = board.settle_roi == null ? "-" : Number(board.settle_roi).toFixed(2);
     el("kpi-refund").textContent = fmtRefund(board.refund_rate_1h);
     el("kpi-people").textContent = k.people_count ?? 0;
+    renderDailyTrend();
     const trend = summary.trend;
     if (trend && trend.length > 1) {
       const who = summary.trend_person || "";
       el("chart-cost-title").textContent = who ? `${who}消耗趋势` : "消耗趋势";
-      el("chart-profit-title").textContent = who ? `${who}利润趋势` : "利润趋势";
+      el("chart-profit-title").textContent = who ? `${who}预估利润趋势` : "预估利润趋势";
       charts["chart-cost"].setOption(lineOption(trend, "cost", COLORS.cost), true);
       charts["chart-profit"].setOption(lineOption(trend, "profit", COLORS.profit), true);
     } else {
       el("chart-cost-title").textContent = "各运营消耗对比";
-      el("chart-profit-title").textContent = "各运营利润对比";
+      el("chart-profit-title").textContent = "各运营预估利润对比";
       charts["chart-cost"].setOption(vBarOption(summary.people, "cost", COLORS.cost, "¥"), true);
       charts["chart-profit"].setOption(
         vBarOption(summary.people, "profit", COLORS.profit, "¥"),
@@ -347,7 +456,7 @@
       toast("还没有数据", "warn");
       return;
     }
-    const lines = ["类型,名称,消耗(元),利润(元),销量"];
+    const lines = ["类型,名称,消耗(元),预估利润(元),销量"];
     summary.people.forEach((p) =>
       lines.push(["运营", p.name, p.cost, p.profit, ""].map(csvCell).join(","))
     );
@@ -419,6 +528,7 @@
     }
     if (isAdmin) el("person-field").classList.remove("hidden");
     initCharts();
+    initTrendPicks();
     await load(false);
   })().catch((err) => toast(err.message, "error"));
 })();
