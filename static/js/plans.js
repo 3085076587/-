@@ -3,6 +3,7 @@
     window.AdHelper;
   const COMMISSION_KEY = "ad_helper_plan_commission";
   const commissionTimers = {};
+  const refundTimers = {};
   let plansCache = [];
   let listMeta = null;
   const pickedIds = new Set();
@@ -175,7 +176,7 @@
   function renderPlans(list) {
     const tbody = el("plan-tbody");
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="12" class="empty">暂无计划</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="13" class="empty">暂无计划</td></tr>';
       return;
     }
     tbody.innerHTML = list
@@ -212,6 +213,7 @@
           ${moneyCell(item.settle_amount)}
           <td class="col-num">${fmtRoi(item.pay_roi)}</td>
           <td class="col-num">${fmtRate(item.refund_rate_1h)}</td>
+          <td class="col-rate"><input class="rate-input" type="number" min="0" max="100" step="0.1" placeholder="未填按0" data-refund-id="${item.ad_id}" value="${refundInputValue(item)}"></td>
           <td class="col-num${rate != null && rate < 0 ? " num-neg" : ""}" data-profit-rate-for="${item.ad_id}">${fmtProfitRate(rate)}</td>
           <td class="col-profit">
             <div class="profit-with-rate">
@@ -273,7 +275,7 @@
       }
       await migrateLocalCommission();
     } catch (err) {
-      el("plan-tbody").innerHTML = `<tr><td colspan="12" class="empty">${err.message || "拉取失败"}</td></tr>`;
+      el("plan-tbody").innerHTML = `<tr><td colspan="13" class="empty">${err.message || "拉取失败"}</td></tr>`;
       el("plan-hint").textContent = err.message || "拉取失败";
       throw err;
     }
@@ -304,6 +306,54 @@
     el("op-pick").checked = pickedIds.has(opAdId);
     el("op-drawer").classList.remove("hidden");
     openPlanLogs(item.ad_id);
+  }
+
+  function refundInputValue(item) {
+    return String(item && item.actual_refund_rate != null ? item.actual_refund_rate : "").replace("%", "").replace(/"/g, "");
+  }
+
+  function parsedRefund(raw) {
+    const text = String(raw == null ? "" : raw).trim();
+    if (!text) return "";
+    const n = Number(text);
+    if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+    return text;
+  }
+
+  function applyRefund(productId, text) {
+    plansCache.forEach((row) => {
+      if (String(row.product_id || "") !== String(productId || "")) return;
+      row.actual_refund_rate = text;
+      paintProfitCell(row.ad_id);
+      const input = document.querySelector(`[data-refund-id="${row.ad_id}"]`);
+      if (input && document.activeElement !== input) input.value = text || "";
+    });
+    paintHint();
+  }
+
+  async function persistRefund(item) {
+    const advertiserId = Number(el("plan-advertiser").value);
+    const productId = Number(item && item.product_id);
+    if (!advertiserId || !item) return;
+    if (!productId) {
+      toast("这条计划没有商品，填不了实际退款率", "warn");
+      return;
+    }
+    const typed = parsedRefund(item.actual_refund_rate);
+    try {
+      const data = await api("/api/product/refund-rate", {
+        method: "POST",
+        body: JSON.stringify({
+          advertiser_id: advertiserId,
+          product_id: productId,
+          product_name: item.product_name || "",
+          actual_refund_rate: typed == null ? "" : typed,
+        }),
+      });
+      applyRefund(productId, data.actual_refund_rate || "");
+    } catch (err) {
+      toast(err.message, "error");
+    }
   }
 
   function parsedCommission(raw) {
@@ -364,6 +414,24 @@
     paintHint();
     clearTimeout(commissionTimers[id]);
     commissionTimers[id] = setTimeout(() => persistCommission(item), 400);
+  });
+
+  el("plan-tbody").addEventListener("input", (event) => {
+    const input = event.target.closest("[data-refund-id]");
+    if (!input) return;
+    const id = input.getAttribute("data-refund-id");
+    const item = plansCache.find((row) => String(row.ad_id) === String(id));
+    if (!item) return;
+    const typed = parsedRefund(input.value);
+    if (typed == null) {
+      toast("实际退款率要在 0 到 100 之间", "warn");
+      return;
+    }
+    item.actual_refund_rate = typed;
+    paintProfitCell(id);
+    paintHint();
+    clearTimeout(refundTimers[id]);
+    refundTimers[id] = setTimeout(() => persistRefund(item), 400);
   });
 
   el("btn-load-plans").addEventListener("click", async (e) => {

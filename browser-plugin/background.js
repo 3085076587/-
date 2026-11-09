@@ -1,11 +1,11 @@
-const API_ORIGIN = "http://120.76.58.132:8088";
+const API_ORIGIN = "http://120.76.58.132:8081";
 const TOKEN_KEY = "qc_plugin_token_v1";
 const USER_KEY = "qc_plugin_user_v1";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return;
   if (message.type === "plugin-login") {
-    pluginLogin(message).then(sendResponse);
+    pluginLogin(message).then(sendResponse, () => sendResponse({ ok: false, msg: "登录失败" }));
     return true;
   }
   if (message.type === "plugin-logout") {
@@ -24,16 +24,24 @@ async function pluginLogin(message) {
         username: String(message.username || "").trim(),
         password: String(message.password || ""),
       }),
+      signal: AbortSignal.timeout(12000),
     });
-    const data = await response.json();
+    const text = await response.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {}
     const token = data && data.data && data.data.token;
     if (!data || data.code !== 0 || !token) {
-      return { ok: false, msg: (data && data.msg) || "登录失败" };
+      const msg = (data && (data.msg || data.detail)) || String(text || "").slice(0, 80) || `后台返回 ${response.status}`;
+      return { ok: false, msg };
     }
     const username = String(data.data.username || "");
     await chrome.storage.local.set({ [TOKEN_KEY]: token, [USER_KEY]: username });
     return { ok: true, username };
-  } catch (_) {
+  } catch (error) {
+    const name = String((error && error.name) || "");
+    if (name === "TimeoutError" || name === "AbortError") return { ok: false, msg: "后台没有响应" };
     return { ok: false, msg: "连不上后台" };
   }
 }

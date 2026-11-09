@@ -932,7 +932,7 @@ th.sortable:hover {
 
 .plans-table {
     width: 100%;
-    min-width: 1240px;
+    min-width: 1360px;
     table-layout: fixed;
     border-collapse: collapse;
 }
@@ -949,6 +949,7 @@ th.sortable:hover {
 .plans-table .col-status { width: 96px; }
 .plans-table .col-budget { width: 148px; }
 .plans-table .col-num { width: 112px; }
+.plans-table .col-rate { width: 108px; }
 .plans-table .col-profit { width: 210px; }
 .plans-table .col-count { width: 110px; }
 .plans-table .col-op { width: 84px; }
@@ -1103,6 +1104,15 @@ th.sortable:hover {
 .plans-table th.col-num,
 .plans-table col.col-num {
     text-align: right;
+}
+
+.plans-table td.col-rate,
+.plans-table th.col-rate {
+    text-align: center;
+}
+
+.plans-table .col-rate .rate-input {
+    width: 84px;
 }
 
 .plans-table td.col-profit,

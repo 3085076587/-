@@ -153,6 +153,22 @@ async def save_product_refund(
         payload.product_name,
         payload.actual_refund_rate,
     )
+    today = date.today().isoformat()
+    cached = await today_plan_cache.get_account(today, payload.advertiser_id)
+    if cached is not None:
+        plans = list(cached.get("plans") or [])
+        for item in plans:
+            if int(item.get("product_id") or 0) != int(payload.product_id):
+                continue
+            item["actual_refund_rate"] = data.get("actual_refund_rate")
+        await today_plan_cache.put_account(
+            today,
+            payload.advertiser_id,
+            plans,
+            start_date=str(cached.get("start_date") or today),
+            end_date=str(cached.get("end_date") or today),
+        )
+        await overview_service.patch_today_account(db, payload.advertiser_id, plans)
     return ok(data)
 
 

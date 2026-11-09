@@ -336,6 +336,8 @@
   }
 
   function planTitle(text) {
+    const named = nameIn(text);
+    if (named) return named;
     const lines = String(text || "").split("\n").map((item) => item.trim()).filter(Boolean);
     for (const line of lines) {
       if (/^ID[:：]/.test(line) || line.length > 90 || line === "首页") continue;
@@ -590,9 +592,10 @@
     if (!before || before === "首页") return "";
     const patterns = [
       /\d{1,2}月\d{1,2}日.{0,48}?保本(?:（[^）]*）|\([^)]*\))?/,
+      /\d{1,2}[.．]\d{1,2}[-－][\u4e00-\u9fa5A-Za-z0-9.－-]{1,80}?保本(?:（[^）]{0,24}）|\([^)]{0,24}\))?/,
       /\d{1,2}[.．]\d{1,2}[\u4e00-\u9fa5][\u4e00-\u9fa5A-Za-z0-9.]{0,40}?保本(?:（[^）]*）|\([^)]*\))?/,
       /\d{1,2}月\d{1,2}日[\u4e00-\u9fa5A-Za-z0-9.]{0,40}/,
-      /[\u4e00-\u9fa5][\u4e00-\u9fa5A-Za-z0-9.]{1,48}保本(?:（[^）]*）|\([^)]*\))?/,
+      /[\u4e00-\u9fa5][\u4e00-\u9fa5A-Za-z0-9.－-]{1,48}?保本(?:（[^）]{0,24}）|\([^)]{0,24}\))?/,
     ];
     for (const pattern of patterns) {
       const hit = before.match(pattern);
@@ -1160,11 +1163,24 @@
       const form = event.currentTarget;
       const error = panel.querySelector(".qc-login-error");
       error.textContent = "正在登录…";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        error.textContent = "后台没有响应";
+      }, 15000);
       chrome.runtime.sendMessage({
         type: "plugin-login",
         username: form.username.value,
         password: form.password.value,
       }, (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) {
+          error.textContent = "请重新加载扩展后再登录";
+          return;
+        }
         if (!result || !result.ok) {
           error.textContent = (result && result.msg) || "登录失败";
           return;
