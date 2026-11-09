@@ -927,12 +927,13 @@ th.sortable:hover {
 
 .plans-table-wrap {
     overflow: auto;
+    max-width: 100%;
     max-height: calc(100vh - 220px);
 }
 
 .plans-table {
-    width: 100%;
-    min-width: 1360px;
+    width: 1740px;
+    min-width: 1740px;
     table-layout: fixed;
     border-collapse: collapse;
 }
@@ -945,7 +946,7 @@ th.sortable:hover {
 }
 
 .plans-table .col-switch { width: 64px; }
-.plans-table .col-info { width: 28%; }
+.plans-table .col-info { width: 360px; }
 .plans-table .col-status { width: 96px; }
 .plans-table .col-budget { width: 148px; }
 .plans-table .col-num { width: 112px; }
