@@ -35,6 +35,7 @@ from app.services import (
 )
 from app.services.advertiser_dashboard import (
     _has_parentheses,
+    fetch_roi2_total,
     load_roi2_accounts,
     person_name,
     take_roi2_total,
@@ -872,6 +873,51 @@ async def align_with_advertiser_page(
     }
 
 
+_SITE_MONEY_KEYS = (
+    "stat_cost",
+    "pay_amount",
+    "pay_roi",
+    "settle_amount",
+    "settle_roi",
+    "refund_rate_1h",
+)
+
+
+async def official_site_metrics(start: str, end: str) -> dict[str, Any] | None:
+    """原站数据概览那一排合计。全部账户时用这个，不再只用带英文括号的店相加。"""
+    found = take_roi2_total(start, end) or {}
+    if not (found.get("stat_cost") or found.get("pay_amount")):
+        try:
+            found = await fetch_roi2_total(start, end)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("原站合计没拿到：%s", exc)
+            return None
+    if not (found.get("stat_cost") or found.get("pay_amount")):
+        return None
+    return found
+
+
+def apply_official_site_money(result: dict[str, Any], official: dict[str, Any]) -> None:
+    """卡片上的消耗、支付、净成交、ROI、退款率改成原站合计。预估利润不动。"""
+    board = dict(result.get("workbench") or {})
+    for key in _SITE_MONEY_KEYS:
+        if official.get(key) is not None:
+            board[key] = official[key]
+    profit = float((result.get("kpis") or {}).get("total_profit") or 0)
+    result["workbench"] = overview_daily_service.with_profit_rate(board, profit)
+    result["kpis"]["total_cost"] = board.get("stat_cost")
+    if result.get("start_date") != result.get("end_date"):
+        return
+    for point in result.get("daily_trend") or []:
+        if point.get("date") != result.get("start_date"):
+            continue
+        point["cost"] = board.get("stat_cost")
+        point["pay_amount"] = board.get("pay_amount")
+        point["settle_amount"] = board.get("settle_amount")
+        pay = float(point.get("pay_amount") or 0)
+        point["profit_rate"] = round(profit / pay, 6) if pay > 0 else None
+
+
 def plan_line_profit(plan: dict[str, Any]) -> float | None:
     """净成交 × (1 − 实际退款率) × 佣金 − 消耗。没有佣金或没有净成交则不计入。"""
     pct = product_report_service.commission_from_saved_or_name(
@@ -1595,4 +1641,8 @@ async def build_overview(
                     point["profit"] = today_aligned["profit"]
                     pay = float(point["pay_amount"] or 0)
                     point["profit_rate"] = round(today_aligned["profit"] / pay, 6) if pay > 0 else None
+    if person is None and allowed_ids is None:
+        official = await official_site_metrics(result["start_date"], result["end_date"])
+        if official:
+            apply_official_site_money(result, official)
     return result
