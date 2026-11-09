@@ -16,7 +16,7 @@ from app.schemas.plan import (
     UpdateStatusIn,
 )
 from app.clients import qianchuan_page
-from app.services import overview_service, plan_service, product_refund, today_plan_cache, uni_create_service, uni_plan_service, workbench_session
+from app.services import overview_service, plan_service, plugin_auth, product_refund, today_plan_cache, uni_create_service, uni_plan_service, workbench_session
 from app.services.account_access import assert_advertiser_access, assert_can_operate, current_username
 
 logger = logging.getLogger("uvicorn.error")
@@ -136,13 +136,16 @@ async def _plans_from_qianchuan_page(db, advertiser_id: int, start: str, end: st
 
 
 @router.post("/product/refund-rate", summary="保存商品实际退款率")
-def save_product_refund(
+async def save_product_refund(
     payload: SaveProductRefundIn,
     request: Request,
     db: Session = Depends(get_db),
 ):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
     assert_can_operate(db, current_username(request), "plan")
+    await plugin_auth.guard_plugin_write(
+        request, payload.advertiser_id, product_id=payload.product_id
+    )
     data = product_refund.save_product_refund(
         db,
         payload.advertiser_id,
@@ -157,6 +160,7 @@ def save_product_refund(
 async def save_commission(payload: SaveCommissionIn, request: Request, db: Session = Depends(get_db)):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
     assert_can_operate(db, current_username(request), "plan")
+    await plugin_auth.guard_plugin_write(request, payload.advertiser_id, ad_id=payload.ad_id)
     data = uni_plan_service.save_plan_commission(
         db,
         payload.advertiser_id,

@@ -2,6 +2,8 @@
   if (globalThis.__qcFangzhouLoaded) return;
   globalThis.__qcFangzhouLoaded = true;
   const ROI_KEY = "qc_breakeven_roi_v1";
+  const PLUGIN_TOKEN_KEY = "qc_plugin_token_v1";
+  const PLUGIN_USER_KEY = "qc_plugin_user_v1";
   const POS_KEY = "qc_panel_pos_v1";
   const SHOW_KEY = "qc_show_metrics_v1";
   const PANEL_ID = "qc-fangzhou-panel";
@@ -9,6 +11,8 @@
   let timer = 0;
   let painting = false;
   let panelOpen = true;
+  let pluginToken = "";
+  let pluginUser = "";
   const metricCache = {};
 
   function onUniPage() {
@@ -76,9 +80,11 @@
       watchTable();
       return;
     }
-    chrome.storage.local.get([ROI_KEY, POS_KEY, SHOW_KEY], (data) => {
+    chrome.storage.local.get([ROI_KEY, POS_KEY, SHOW_KEY, PLUGIN_TOKEN_KEY, PLUGIN_USER_KEY], (data) => {
       if (!storageAlive()) return;
       roiMap = (data && data[ROI_KEY]) || {};
+      pluginToken = (data && data[PLUGIN_TOKEN_KEY]) || "";
+      pluginUser = (data && data[PLUGIN_USER_KEY]) || "";
       const pos = data && data[POS_KEY];
       if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) panelPos = pos;
       const shown = data && data[SHOW_KEY];
@@ -105,6 +111,7 @@
   }
 
   function syncProfit(planId) {
+    if (!pluginToken) return;
     const saved = recordOf(planId);
     const plan = pagePlans.find((item) => item.id === planId);
     try {
@@ -1006,6 +1013,10 @@
 
   function paintPanel(plans) {
     let panel = document.getElementById(PANEL_ID);
+    if (panel && panel.dataset.mode === "login") {
+      panel.remove();
+      panel = null;
+    }
     if (!panelOpen) {
       if (panel) panel.remove();
       return;
@@ -1013,13 +1024,22 @@
     if (!panel) {
       panel = document.createElement("aside");
       panel.id = PANEL_ID;
-      panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-refresh">刷新</button><button type="button" id="qc-fangzhou-close">关闭</button></span></header><div class="qc-formula">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗<br>预计成交GMV = 净成交 × (1 − 退款率)。货品毛利 = 预计成交GMV × 佣金率。预计ROI = 货品毛利 ÷ 整体消耗。<br>整体消耗、净成交金额从表格读取。退款率需要填写，不填按 0。佣金从计划名称里的「佣金:xx%」提取，没有就在下方填写，填了以填写的为准。</div><div class="qc-show"><label><input type="checkbox" data-show="gmv">预计成交GMV</label><label><input type="checkbox" data-show="margin">货品毛利</label><label><input type="checkbox" data-show="roi">预计ROI</label></div><div id="qc-fangzhou-total"></div><div id="qc-fangzhou-list"></div>`;
+      panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-logout">退出</button><button type="button" id="qc-fangzhou-refresh">刷新</button><button type="button" id="qc-fangzhou-close">关闭</button></span></header><div class="qc-formula">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗<br>预计成交GMV = 净成交 × (1 − 退款率)。货品毛利 = 预计成交GMV × 佣金率。预计ROI = 货品毛利 ÷ 整体消耗。<br>整体消耗、净成交金额从表格读取。退款率需要填写，不填按 0。佣金从计划名称里的「佣金:xx%」提取，没有就在下方填写，填了以填写的为准。</div><div class="qc-show"><label><input type="checkbox" data-show="gmv">预计成交GMV</label><label><input type="checkbox" data-show="margin">货品毛利</label><label><input type="checkbox" data-show="roi">预计ROI</label></div><div id="qc-fangzhou-total"></div><div id="qc-fangzhou-list"></div>`;
       document.documentElement.appendChild(panel);
       placePanel(panel);
       enableDrag(panel);
       panel.querySelector("#qc-fangzhou-close").addEventListener("click", () => {
         panelOpen = false;
         panel.remove();
+      });
+      panel.querySelector("#qc-fangzhou-logout").addEventListener("click", () => {
+        pluginToken = "";
+        pluginUser = "";
+        try {
+          chrome.runtime.sendMessage({ type: "plugin-logout" });
+        } catch (_) {}
+        panel.remove();
+        paint();
       });
       panel.querySelector("#qc-fangzhou-refresh").addEventListener("click", () => {
         lastReport = "";
@@ -1114,9 +1134,59 @@
     document.querySelectorAll("#qc-profit-summary, #qc-roi-mode-bar, .qc-profit-cell").forEach((node) => node.remove());
   }
 
+  function paintLogin() {
+    if (!panelOpen) {
+      const existing = document.getElementById(PANEL_ID);
+      if (existing) existing.remove();
+      return;
+    }
+    let panel = document.getElementById(PANEL_ID);
+    if (panel && panel.dataset.mode === "login" && panel.contains(document.activeElement)) return;
+    if (!panel) {
+      panel = document.createElement("aside");
+      panel.id = PANEL_ID;
+      document.documentElement.appendChild(panel);
+      placePanel(panel);
+      enableDrag(panel);
+    }
+    panel.dataset.mode = "login";
+    panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-close">关闭</button></span></header><form class="qc-login"><p>登录后才能改实际退款率和佣金，并同步到后台。网页登录不受影响。</p><input name="username" autocomplete="username" placeholder="账号" maxlength="64"><input name="password" type="password" autocomplete="current-password" placeholder="密码" maxlength="128"><button type="submit">登录</button><div class="qc-login-error"></div></form>`;
+    panel.querySelector("#qc-fangzhou-close").addEventListener("click", () => {
+      panelOpen = false;
+      panel.remove();
+    });
+    panel.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const error = panel.querySelector(".qc-login-error");
+      error.textContent = "正在登录…";
+      chrome.runtime.sendMessage({
+        type: "plugin-login",
+        username: form.username.value,
+        password: form.password.value,
+      }, (result) => {
+        if (!result || !result.ok) {
+          error.textContent = (result && result.msg) || "登录失败";
+          return;
+        }
+        chrome.storage.local.get([PLUGIN_TOKEN_KEY, PLUGIN_USER_KEY], (data) => {
+          pluginToken = (data && data[PLUGIN_TOKEN_KEY]) || "";
+          pluginUser = (data && data[PLUGIN_USER_KEY]) || result.username || "";
+          panel.remove();
+          paint();
+        });
+      });
+    });
+  }
+
   function paint() {
     if (!onUniPage()) {
       clearInjected();
+      return;
+    }
+    if (!pluginToken) {
+      document.querySelectorAll(".qc-profit-col, .qc-profit-head, .qc-profit-badge").forEach((node) => node.remove());
+      paintLogin();
       return;
     }
     if (painting) return;
@@ -1165,7 +1235,17 @@
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "toggle-panel") return;
+    if (!message || !message.type) return;
+    if (message.type === "plugin-auth-lost") {
+      pluginToken = "";
+      pluginUser = "";
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) panel.remove();
+      paint();
+      sendResponse({ ok: true });
+      return;
+    }
+    if (message.type !== "toggle-panel") return;
     panelOpen = !document.getElementById(PANEL_ID);
     if (!panelOpen) {
       const panel = document.getElementById(PANEL_ID);

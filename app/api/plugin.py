@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.exceptions import AppError
 from app.core.response import ok
-from app.services import overview_service, product_refund, product_report_service, today_plan_cache, uni_plan_service
+from app.services import overview_service, plugin_auth, product_refund, product_report_service, session_auth, today_plan_cache, uni_plan_service
 from app.services.account_access import assert_advertiser_access, assert_can_operate, current_username
 from app.services.plan_commission_sync import resolve_plan_commission_pct, user_saved_commissions
 from app.services.plugin_page import parse_uni_html
@@ -22,6 +22,20 @@ class PageHtmlIn(BaseModel):
 @router.post("/plugin/page", summary="用 BeautifulSoup 解析全域投放页 HTML")
 def parse_plugin_page(body: PageHtmlIn):
     return ok({"plans": parse_uni_html(body.html)})
+
+
+class PluginLoginIn(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+@router.post("/plugin/login", summary="插件登录，只签发改佣金和退款率的凭证")
+def plugin_login(body: PluginLoginIn, db: Session = Depends(get_db)):
+    name = body.username.strip()
+    if not session_auth.verify_credentials(db, name, body.password):
+        raise AppError("账号或密码错误", code=40101)
+    token = session_auth.create_session_token(name, scope=session_auth.PLUGIN_SCOPE)
+    return ok({"username": name, "token": token}, msg="登录成功")
 
 
 class ProfitInputIn(BaseModel):
@@ -54,12 +68,18 @@ async def sync_profit_input(
 ):
     assert_advertiser_access(db, current_username(request), payload.advertiser_id)
     assert_can_operate(db, current_username(request), "plan")
+    locked = await plugin_auth.guard_plugin_write(
+        request, payload.advertiser_id, ad_id=payload.ad_id
+    )
     commission = _parse_commission_input(payload.commission)
     today = date.today().isoformat()
     cached = await today_plan_cache.get_account(today, payload.advertiser_id)
     plans = list((cached or {}).get("plans") or [])
-    matched = next((item for item in plans if int(item.get("ad_id") or 0) == int(payload.ad_id)), None)
-    product_id = payload.product_id
+    matched = locked or next(
+        (item for item in plans if int(item.get("ad_id") or 0) == int(payload.ad_id)),
+        None,
+    )
+    product_id = None if locked is not None else payload.product_id
     product_name = (payload.product_name or "").strip()
     if matched:
         if not product_id and matched.get("product_id"):

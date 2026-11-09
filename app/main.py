@@ -19,6 +19,7 @@ from app.core.log_setup import get_task_logger
 from app.core.redis_client import close_redis
 from app.core.response import fail
 from app.services import session_auth
+from app.services.plugin_auth import PLUGIN_WRITE_PATHS
 from app.services.product_report_service import seed_markers_from_daily
 from app.services.scheduler import daily_sync_loop, overview_today_loop, token_refresh_loop
 import app.models  # noqa: F401 注册 ORM 模型
@@ -33,6 +34,7 @@ _PUBLIC_EXACT = {
     "/favicon.ico",
     "/api/auth/login",
     "/api/oauth/callback",
+    "/api/plugin/login",
     "/api/plugin/page",
 }
 _PUBLIC_PREFIX = ("/static/",)
@@ -128,6 +130,18 @@ async def login_gate(request: Request, call_next):
     user = session_auth.read_session(request)
     if user:
         request.state.user = user
+        request.state.credential = "web"
+        return await call_next(request)
+
+    plugin_user = session_auth.read_plugin_user(request)
+    if plugin_user:
+        if request.method != "POST" or path not in PLUGIN_WRITE_PATHS:
+            return JSONResponse(
+                status_code=200,
+                content=fail(40303, "这个登录凭证只能修改佣金和实际退款率"),
+            )
+        request.state.user = plugin_user
+        request.state.credential = "plugin"
         return await call_next(request)
 
     if path.startswith("/api/"):

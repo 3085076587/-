@@ -18,6 +18,8 @@ from app.models.sys_user import SysUser
 from app.services.password_hash import verify_password
 
 COOKIE_NAME = "ad_helper_session"
+PLUGIN_SCOPE = "profit"
+PLUGIN_HEADER = "x-ad-helper-plugin"
 
 
 def _b64e(raw: bytes) -> str:
@@ -35,12 +37,15 @@ def _sign(payload_b64: str) -> str:
     return _b64e(digest)
 
 
-def create_session_token(username: str) -> str:
+def create_session_token(username: str, scope: str | None = None) -> str:
+    """网页登录不带 scope。插件登录带 scope，同一套签名和过期时间。"""
     settings = get_settings()
-    payload = {
+    payload: dict[str, Any] = {
         "u": username,
         "exp": int(time.time()) + int(settings.SESSION_MAX_AGE_SECONDS),
     }
+    if scope:
+        payload["s"] = scope
     payload_b64 = _b64e(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     return f"{payload_b64}.{_sign(payload_b64)}"
 
@@ -60,7 +65,7 @@ def parse_session_token(token: str | None) -> dict[str, Any] | None:
     username = str(payload.get("u") or "")
     if not username:
         return None
-    return {"username": username}
+    return {"username": username, "scope": str(payload.get("s") or "")}
 
 
 def verify_credentials(db: Session, username: str, password: str) -> bool:
@@ -74,8 +79,21 @@ def verify_credentials(db: Session, username: str, password: str) -> bool:
 
 
 def read_session(request: Request) -> dict[str, Any] | None:
+    """网页凭证。带插件用途标记的凭证不能当网页登录用。"""
     token = request.cookies.get(COOKIE_NAME) or request.headers.get("x-ad-helper-session")
-    return parse_session_token(token)
+    user = parse_session_token(token)
+    if not user or user.get("scope"):
+        return None
+    return {"username": user["username"]}
+
+
+def read_plugin_user(request: Request) -> dict[str, Any] | None:
+    """插件凭证。必须带利润写入标记，不能拿网页凭证来冒充。"""
+    token = request.headers.get(PLUGIN_HEADER)
+    user = parse_session_token(token)
+    if not user or user.get("scope") != PLUGIN_SCOPE:
+        return None
+    return {"username": user["username"], "scope": PLUGIN_SCOPE}
 
 
 def set_session_cookie(response: Response, username: str) -> None:
