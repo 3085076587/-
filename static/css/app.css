@@ -932,8 +932,8 @@ th.sortable:hover {
 }
 
 .plans-table {
-    width: 1740px;
-    min-width: 1740px;
+    width: 1760px;
+    min-width: 1760px;
     table-layout: fixed;
     border-collapse: collapse;
 }
@@ -950,7 +950,7 @@ th.sortable:hover {
 .plans-table .col-status { width: 96px; }
 .plans-table .col-budget { width: 148px; }
 .plans-table .col-num { width: 112px; }
-.plans-table .col-rate { width: 108px; }
+.plans-table .col-rate { width: 128px; }
 .plans-table .col-profit { width: 210px; }
 .plans-table .col-count { width: 110px; }
 .plans-table .col-op { width: 84px; }
@@ -1112,8 +1112,19 @@ th.sortable:hover {
     text-align: center;
 }
 
+.plans-table .col-rate .rate-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
 .plans-table .col-rate .rate-input {
-    width: 84px;
+    width: 72px;
+}
+
+.plans-table .rate-suffix {
+    color: var(--text-secondary);
+    font-size: 13px;
 }
 
 .plans-table td.col-profit,

@@ -213,7 +213,7 @@
           ${moneyCell(item.settle_amount)}
           <td class="col-num">${fmtRoi(item.pay_roi)}</td>
           <td class="col-num">${fmtRate(item.refund_rate_1h)}</td>
-          <td class="col-rate"><input class="rate-input" type="number" min="0" max="100" step="0.1" placeholder="未填按0" data-refund-id="${item.ad_id}" value="${refundInputValue(item)}"></td>
+          <td class="col-rate"><span class="rate-field"><input class="rate-input" type="number" min="0" max="100" step="0.1" placeholder="未填按0" data-refund-id="${item.ad_id}" value="${refundInputValue(item)}"><span class="rate-suffix">%</span></span></td>
           <td class="col-num${rate != null && rate < 0 ? " num-neg" : ""}" data-profit-rate-for="${item.ad_id}">${fmtProfitRate(rate)}</td>
           <td class="col-profit">
             <div class="profit-with-rate">
