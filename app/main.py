@@ -13,12 +13,12 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import get_settings
-from app.core.database import Base, SessionLocal, engine, ensure_columns
+from app.core.database import Base, SessionLocal, engine, ensure_account_schema, ensure_columns
 from app.core.exceptions import register_exception_handlers
 from app.core.log_setup import get_task_logger
 from app.core.redis_client import close_redis
 from app.core.response import fail
-from app.services import session_auth
+from app.services import account_scope, session_auth, token_store
 from app.services.plugin_auth import PLUGIN_WRITE_PATHS
 from app.services.product_report_service import seed_markers_from_daily
 from app.services.scheduler import daily_sync_loop, overview_today_loop, token_refresh_loop
@@ -62,6 +62,9 @@ async def lifespan(_: FastAPI):
     added = ensure_columns()
     if added:
         logger.info("已补齐缺失列：%s", "、".join(added))
+    account_added = ensure_account_schema()
+    if account_added:
+        logger.info("授权账号结构已补齐：%s", "、".join(account_added))
 
     # 给已入库的商品日数据补写同步标记（幂等、零接口），让历史区间秒变覆盖。
     try:
@@ -128,29 +131,37 @@ async def login_gate(request: Request, call_next):
         return await call_next(request)
 
     user = session_auth.read_session(request)
-    if user:
-        request.state.user = user
-        request.state.credential = "web"
-        return await call_next(request)
-
-    plugin_user = session_auth.read_plugin_user(request)
-    if plugin_user:
-        if request.method != "POST" or path not in PLUGIN_WRITE_PATHS:
-            return JSONResponse(
-                status_code=200,
-                content=fail(40303, "这个登录凭证只能修改佣金和实际退款率"),
-            )
-        request.state.user = plugin_user
-        request.state.credential = "plugin"
-        return await call_next(request)
-
-    if path.startswith("/api/"):
+    plugin_user = None if user else session_auth.read_plugin_user(request)
+    if plugin_user and (request.method != "POST" or path not in PLUGIN_WRITE_PATHS):
         return JSONResponse(
             status_code=200,
-            content=fail(40100, "未登录或登录已过期"),
+            content=fail(40303, "这个登录凭证只能修改佣金和实际退款率"),
         )
-    next_url = path if path != "/login" else "/"
-    return RedirectResponse(url=f"/login?next={next_url}", status_code=302)
+    if not user and not plugin_user:
+        if path.startswith("/api/"):
+            return JSONResponse(
+                status_code=200,
+                content=fail(40100, "未登录或登录已过期"),
+            )
+        next_url = path if path != "/login" else "/"
+        return RedirectResponse(url=f"/login?next={next_url}", status_code=302)
+
+    request.state.user = user or plugin_user
+    request.state.credential = "web" if user else "plugin"
+    scope_token = None
+    db = SessionLocal()
+    try:
+        row = token_store.selected_row(db)
+        if row is not None and row.agent_id:
+            scope_token = account_scope.activated(row)
+            scope_token.__enter__()
+    finally:
+        db.close()
+    try:
+        return await call_next(request)
+    finally:
+        if scope_token is not None:
+            scope_token.__exit__(None, None, None)
 
 
 @app.get("/favicon.ico", include_in_schema=False)

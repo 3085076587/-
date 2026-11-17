@@ -1,8 +1,8 @@
-"""巨量引擎工作台登录凭证，整库只保留一条。"""
+"""巨量引擎工作台登录凭证，每个组织一条。"""
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -10,6 +10,7 @@ from app.core.database import Base
 
 class WorkbenchSession(Base):
     __tablename__ = "workbench_session"
+    __table_args__ = (UniqueConstraint("ebpid", name="uk_workbench_ebpid"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="主键")
     ebpid: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="升级版工作台组织 ID")

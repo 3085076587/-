@@ -11,14 +11,12 @@ import asyncio
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
-from app.models.advertiser import QianchuanAdvertiser
 from app.clients import qianchuan_page
-from app.services import overview_service, product_refund, today_plan_cache, uni_plan_service, workbench_session
+from app.services import account_scope, overview_service, product_refund, today_plan_cache, uni_plan_service, workbench_session
 from app.services.advertiser_dashboard import load_roi2_accounts, take_roi2_total
 from app.services.sync_retry import async_retry
 
@@ -39,13 +37,15 @@ async def _refresh_today(db: Session) -> dict[str, Any]:
     today = date.today().isoformat()
     settings = get_settings()
     concurrency = max(1, int(settings.TODAY_PLAN_CONCURRENCY or 1))
-    adv_ids = [int(x) for x in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
+    adv_ids = account_scope.scoped_advertiser_ids(db)
     try:
-        workbench = await async_retry(
-            lambda: load_roi2_accounts(today, today),
-            attempts=4,
-            base_delay_seconds=3,
-            label=f"今天刷新-工作台 {today}",
+        workbench = account_scope.only_this_shop(
+            await async_retry(
+                lambda: load_roi2_accounts(today, today),
+                attempts=4,
+                base_delay_seconds=3,
+                label=f"今天刷新-工作台 {today}",
+            )
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("今天刷新：工作台没拉到，继续用上一份缓存：%s", exc)

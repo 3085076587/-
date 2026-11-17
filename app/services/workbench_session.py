@@ -12,15 +12,19 @@ from app.clients.workbench import fetch_product_accounts, parse_cookie
 from app.core.exceptions import AppError
 from app.core.log_setup import get_task_logger
 from app.models.workbench_session import WorkbenchSession
+from app.services import account_scope
 
 task_logger = get_task_logger()
 
 KEEP_HOURS = 12
-# 工作台登录只有一份。同时刷新时排队用这一把锁，避免两个人各写一次把凭证盖掉。
+# 同时刷新时排队，避免两个人各写一次把同一条凭证盖掉。
 fetch_lock = asyncio.Lock()
 
 
-def get_session(db: Session) -> WorkbenchSession | None:
+def get_session(db: Session, ebpid: int | None = None) -> WorkbenchSession | None:
+    target = int(ebpid) if ebpid else account_scope.agent_id()
+    if target:
+        return db.scalar(select(WorkbenchSession).where(WorkbenchSession.ebpid == int(target)))
     return db.scalar(select(WorkbenchSession).order_by(WorkbenchSession.id.desc()).limit(1))
 
 
@@ -40,7 +44,7 @@ def save_session(
     expires_at: datetime | None = None,
 ) -> WorkbenchSession:
     csrf = csrf_token or parse_cookie(cookie).get("csrftoken", "")
-    row = get_session(db)
+    row = db.scalar(select(WorkbenchSession).where(WorkbenchSession.ebpid == int(ebpid)))
     when = expires_at or (datetime.now() + timedelta(hours=KEEP_HOURS))
     if row is None:
         row = WorkbenchSession(
@@ -79,11 +83,11 @@ def mark_fail(db: Session, row: WorkbenchSession, message: str) -> None:
     db.commit()
 
 
-async def keepalive(db: Session) -> None:
-    """用今天的账户表打一页，确认登录还在，并把新 Cookie 写回。"""
+async def keepalive(db: Session, row: WorkbenchSession | None = None) -> None:
+    """用今天的账户表打一页，确认这一条登录还在，并把新 Cookie 写回这一条。"""
     async with fetch_lock:
         db.expire_all()
-        row = get_session(db)
+        row = row or get_session(db)
         if row is None or not (row.cookie or "").strip():
             task_logger.info("工作台保活：还没有登录凭证，跳过")
             return
@@ -99,8 +103,17 @@ async def keepalive(db: Session) -> None:
                 max_pages=1,
             )
         except Exception as exc:
-            task_logger.exception("工作台保活失败：%s", exc)
+            task_logger.exception("工作台保活失败 ebpid=%s：%s", row.ebpid, exc)
             mark_fail(db, row, str(exc))
             return
         mark_ok(db, row, cookie, csrf)
-        task_logger.info("工作台登录保活成功，有效期顺延到 %s", row.expires_at)
+        task_logger.info("工作台登录保活成功 ebpid=%s，有效期顺延到 %s", row.ebpid, row.expires_at)
+
+
+async def keepalive_all(db: Session) -> None:
+    rows = list(db.scalars(select(WorkbenchSession).order_by(WorkbenchSession.id.asc())).all())
+    if not rows:
+        task_logger.info("工作台保活：还没有登录凭证，跳过")
+        return
+    for row in rows:
+        await keepalive(db, row)

@@ -55,7 +55,9 @@ def range_dates(range_key: str) -> tuple[str, str]:
 
 def cache_key(range_key: str, person: str, day: str | None = None) -> str:
     day = day or date.today().isoformat()
-    return f"{CACHE_PREFIX}:{person}:{range_key}:{day}"
+    from app.services import account_scope
+
+    return f"{CACHE_PREFIX}:{account_scope.agent_id() or 0}:{person}:{range_key}:{day}"
 
 
 def _flight_id(range_key: str, person: str) -> str:

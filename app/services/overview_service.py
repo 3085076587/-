@@ -33,6 +33,7 @@ from app.services import (
     today_plan_cache,
     token_store,
 )
+from app.services import account_scope
 from app.services.advertiser_dashboard import (
     _has_parentheses,
     fetch_roi2_total,
@@ -55,11 +56,11 @@ _job_locks: dict[str, asyncio.Lock] = {}
 
 
 def progress_key(start: str, end: str) -> str:
-    return f"{start}~{end}"
+    return f"{account_scope.agent_id() or 0}:{start}~{end}"
 
 
 def _cache_key(person: str, start: str, end: str) -> str:
-    return f"{CACHE_PREFIX}:{person}:{start}:{end}"
+    return f"{CACHE_PREFIX}:{account_scope.agent_id() or 0}:{person}:{start}:{end}"
 
 
 async def _read_cache(key: str) -> dict[str, Any] | None:
@@ -89,11 +90,15 @@ async def _write_cache(key: str, data: dict[str, Any], ttl: int = 36 * 3600) -> 
 def _person_advertisers(db: Session) -> dict[str, list[int]]:
     """库里按人名分组子账户 ID。DB 读取都集中在这，之后协程不再碰库。"""
     people: dict[str, list[int]] = defaultdict(list)
-    for row in db.scalars(select(QianchuanAdvertiser)).all():
+    stmt = select(QianchuanAdvertiser)
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    for row in db.scalars(stmt).all():
         adv_name = row.advertiser_name or ""
-        if not _has_parentheses(adv_name):
+        if not account_scope.keeps_name(adv_name):
             continue
-        name = person_name(adv_name)
+        name = account_scope.owner_label(adv_name)
         if not name:
             continue
         people[name].append(int(row.advertiser_id))
@@ -276,7 +281,7 @@ def _empty_result(start: str, end: str, note: str) -> dict[str, Any]:
 
 
 def _today_key(day: str) -> str:
-    return f"{TODAY_CACHE_PREFIX}:{day}"
+    return f"{TODAY_CACHE_PREFIX}:{account_scope.agent_id() or 0}:{day}"
 
 
 def _top_products(product_bag: dict[int, dict[str, Any]], key: str, commission_map: dict[int, float]) -> list[dict[str, Any]]:
@@ -722,7 +727,7 @@ async def today_plan_profit_overlay(db: Session) -> dict[int, float]:
     from app.services.plan_commission_sync import user_commissions_by_advertiser
 
     day = date.today().isoformat()
-    ids = [int(row) for row in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
+    ids = account_scope.scoped_advertiser_ids(db)
     cached = await today_plan_cache.mget_accounts(day, ids)
     users = user_commissions_by_advertiser(db, list(cached))
     meta = product_report_service.load_product_meta(db, list(cached))
@@ -761,11 +766,13 @@ async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, flo
     profits: dict[int, float] = defaultdict(float)
     have = False
     if start_d <= hist_end:
-        ids = [int(row) for row in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
-        name_commission = await _plan_name_commissions(db, ids)
+        ids = set(account_scope.scoped_advertiser_ids(db))
+        name_commission = await _plan_name_commissions(db, list(ids))
         for adv_id, val in product_report_service.profits_by_advertiser(
             db, start_d.isoformat(), hist_end.isoformat(), name_commission
         ).items():
+            if int(adv_id) not in ids:
+                continue
             profits[adv_id] += val
         have = True
     if include_today:
@@ -777,7 +784,10 @@ async def shop_profits(db: Session, start: str, end: str) -> tuple[dict[int, flo
         else:
             merged = dict(today_map or {})
             merged.update(plan_map)
+            allowed = set(account_scope.scoped_advertiser_ids(db))
             for adv_id, val in merged.items():
+                if allowed and int(adv_id) not in allowed:
+                    continue
                 profits[adv_id] += val
             have = True
     if not have:
@@ -814,7 +824,8 @@ async def _accounts_matching_advertiser_page(
         return list(data.get("accounts") or [])
     rows = await load_roi2_accounts(start, end)
     only = names[0] if people and len(people) == 1 else None
-    accounts = list(dashboard_from_accounts(rows, start, end, only).get("accounts") or [])
+    kept = set(account_scope.scoped_advertiser_ids(db)) if account_scope.is_chengmai() else None
+    accounts = list(dashboard_from_accounts(rows, start, end, only, kept).get("accounts") or [])
     if people and len(people) != 1:
         allow = set(people)
         accounts = [

@@ -41,6 +41,11 @@
         <div class="muted" id="stat-agent-name">管理账户名称 / 角色：-</div>
       </div>
       <div class="panel">
+        <div class="panel-title">切换授权账号</div>
+        <div class="toolbar" id="account-switch"></div>
+        <p class="hint" id="account-hint">授权完成后，在这里切换。页面上的店铺、总览和定时入库都会跟着当前这个账号走。</p>
+      </div>
+      <div class="panel">
         <div class="panel-title">授权与同步</div>
         <div class="toolbar">
           <button class="btn btn-primary" id="btn-authorize">打开巨量授权</button>
@@ -48,8 +53,8 @@
         </div>
         <input type="hidden" id="authorize-url" value="__AUTHORIZE_URL__">
         <p class="hint">
-          点「打开巨量授权」完成授权后，系统会自动入库 token 并识别管理账户 agent_id。
-          token 由后台定时刷新。授权完成后可点「同步全部子账户」。
+          点「打开巨量授权」后，这次授权里出现的账号会各自入库，原来的账号不会被盖掉。
+          token 由后台定时刷新。切到要看的账号后，再点「同步全部子账户」，这一家的数据会重新拉取。
         </p>
       </div>
     </main>
@@ -57,6 +62,6 @@
 </div>
 <script src="/static/js/common.js?v=20261103u"></script>
 <script src="/static/js/partials.js?v=20261106d"></script>
-<script src="/static/js/auth.js"></script>
+<script src="/static/js/auth.js?v=20261117a"></script>
 </body>
 </html>

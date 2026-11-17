@@ -283,7 +283,9 @@ async def sync_advertiser_plan_commissions(
 async def sync_all_advertisers(db: Session) -> dict[str, Any]:
     settings = get_settings()
     gate = asyncio.Semaphore(max(1, int(settings.DASHBOARD_CONCURRENCY or 2)))
-    adv_ids = [int(x) for x in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
+    from app.services import account_scope
+
+    adv_ids = account_scope.scoped_advertiser_ids(db)
     totals = {"advertisers": len(adv_ids), "updated": 0, "deleted": 0, "failed": 0}
 
     async def one(adv_id: int) -> None:

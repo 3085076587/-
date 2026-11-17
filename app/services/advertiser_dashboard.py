@@ -16,7 +16,7 @@ from app.clients.workbench import fetch_product_accounts
 from app.core.database import SessionLocal
 from app.core.exceptions import AppError
 from app.models.advertiser import QianchuanAdvertiser
-from app.services import workbench_session
+from app.services import account_scope, workbench_session
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -45,11 +45,15 @@ def person_name(advertiser_name: str) -> str | None:
 
 
 def list_people(db: Session) -> list[str]:
-    rows = db.scalars(select(QianchuanAdvertiser.advertiser_name)).all()
+    stmt = select(QianchuanAdvertiser.advertiser_name)
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    rows = db.scalars(stmt).all()
     names: list[str] = []
     seen: set[str] = set()
     for raw in rows:
-        name = person_name(raw or "")
+        name = account_scope.owner_label(raw or "")
         if not name or name in seen or name == "admin":
             continue
         seen.add(name)
@@ -59,9 +63,13 @@ def list_people(db: Session) -> list[str]:
 
 def count_person_accounts(db: Session, person: str) -> int:
     total = 0
-    rows = db.scalars(select(QianchuanAdvertiser.advertiser_name)).all()
+    stmt = select(QianchuanAdvertiser.advertiser_name)
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    rows = db.scalars(stmt).all()
     for raw in rows:
-        if person_name(raw or "") == person:
+        if account_scope.owner_label(raw or "") == person:
             total += 1
     return total
 
@@ -110,9 +118,13 @@ async def _fetch_accounts_locked(start: str, end: str) -> tuple[list[dict[str, A
         db.close()
 
 
+def _range_key(start: str, end: str) -> str:
+    return f"{account_scope.agent_id() or 0}|{start}|{end}"
+
+
 def take_roi2_total(start: str, end: str) -> dict[str, Any] | None:
     """最近一次拉这个区间时，工作台返回的原站合计。"""
-    found = _roi2_totals.get(f"{start}|{end}")
+    found = _roi2_totals.get(_range_key(start, end))
     return dict(found) if found else None
 
 
@@ -148,12 +160,8 @@ async def fetch_roi2_total(
 
 
 async def load_roi2_accounts(start: str, end: str) -> list[dict[str, Any]]:
-    """同一轮刷新里，多个人共用这一次工作台请求。"""
-    key = f"{start}|{end}"
-    now = time.monotonic()
-    cached = _load_cache.get(key)
-    if cached and now - cached[0] < _LOAD_CACHE_SECONDS:
-        return list(cached[1])
+    """同一轮刷新里，多个人共用这一次工作台请求。不同授权账号不共用。"""
+    key = _range_key(start, end)
 
     async with _load_lock:
         cached = _load_cache.get(key)
@@ -237,11 +245,19 @@ def dashboard_from_accounts(
     start: str,
     end: str,
     person: str | None,
+    kept_ids: set[int] | None = None,
 ) -> dict[str, Any]:
+    chengmai = account_scope.is_chengmai()
+    stored = kept_ids or set()
     chosen = []
     for item in accounts:
         name = str(item.get("advertiser_name") or "")
-        if not _has_parentheses(name):
+        cost = float(item.get("stat_cost") or 0)
+        adv_id = int(item.get("advertiser_id") or 0)
+        if chengmai:
+            if cost <= 0 and adv_id not in stored:
+                continue
+        elif not _has_parentheses(name):
             continue
         if person is not None and person_name(name) != person:
             continue
@@ -268,7 +284,7 @@ async def build_dashboard(
     client: Any = None,
     gate: asyncio.Semaphore | None = None,
 ) -> dict[str, Any]:
-    del db, previous_accounts, client, gate
+    del previous_accounts, client, gate
     today = date.today().isoformat()
     start = start_date or today
     end = end_date or today
@@ -276,7 +292,8 @@ async def build_dashboard(
     if progress_cb:
         await progress_cb(0, total, "正在读取工作台账户表")
     accounts = await load_roi2_accounts(start, end)
-    data = dashboard_from_accounts(accounts, start, end, person)
+    kept_ids = set(account_scope.scoped_advertiser_ids(db)) if account_scope.is_chengmai() else None
+    data = dashboard_from_accounts(accounts, start, end, person, kept_ids)
     if progress_cb:
         await progress_cb(total, total, f"已完成 {data['total']} 个账户")
     return data

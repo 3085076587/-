@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -11,9 +13,12 @@ from sqlalchemy.orm import Session
 from app.clients.oceanengine import OceanEngineClient
 from app.core.exceptions import AppError
 from app.models.advertiser import QianchuanAdvertiser
+from app.models.qianchuan_account_daily import QianchuanAccountDaily
 from app.schemas.advertiser import AdvertiserSyncOut
-from app.services import token_store
+from app.services import account_scope, token_store
 from app.services.advertiser_dashboard import _has_parentheses, person_name
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _page_has_more(page_info: dict[str, Any], page: int, page_size: int, batch_len: int) -> bool:
@@ -120,6 +125,39 @@ async def _fetch_customer_center_accounts(
     return result
 
 
+async def _balance_yuan(client: OceanEngineClient, advertiser_ids: list[int]) -> dict[int, float | None]:
+    """总余额，单位元。没查到的是 None，不能当成 0。"""
+    found: dict[int, float | None] = {int(adv_id): None for adv_id in advertiser_ids}
+    for start in range(0, len(advertiser_ids), 20):
+        chunk = [int(adv_id) for adv_id in advertiser_ids[start : start + 20]]
+        if not chunk:
+            continue
+        try:
+            data = await client.batch_account_fund(chunk)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("查总余额失败，这批先不动：%s", exc)
+            continue
+        for item in data.get("list") or []:
+            adv_id = int(item.get("account_id") or 0)
+            if not adv_id:
+                continue
+            found[adv_id] = float(item.get("balance") or 0) / 100.0
+        await asyncio.sleep(0.4)
+    return found
+
+
+def _spent_ids(db: Session, advertiser_ids: list[int]) -> set[int]:
+    if not advertiser_ids:
+        return set()
+    rows = db.scalars(
+        select(QianchuanAccountDaily.advertiser_id).where(
+            QianchuanAccountDaily.advertiser_id.in_(advertiser_ids),
+            QianchuanAccountDaily.cost > 0,
+        )
+    ).all()
+    return {int(item) for item in rows}
+
+
 async def sync_all_advertisers(db: Session, only_person: str | None = None) -> AdvertiserSyncOut:
     row = await token_store.ensure_access_token(db)
     if not row.agent_id:
@@ -128,8 +166,15 @@ async def sync_all_advertisers(db: Session, only_person: str | None = None) -> A
     client = await token_store.build_client(db)
     agent_id = int(row.agent_id)
     role = str(row.account_role or "")
-
-    if role.startswith("PLATFORM_ROLE_ENTERPRISE_BP") or role.endswith("ENTERPRISE_BP_ADMIN") or role.endswith(
+    if str(row.account_kind or "") == "shop":
+        accounts = [
+            {
+                "advertiser_id": agent_id,
+                "advertiser_name": row.agent_name or str(agent_id),
+                "status": "ACTIVE",
+            }
+        ]
+    elif role.startswith("PLATFORM_ROLE_ENTERPRISE_BP") or role.endswith("ENTERPRISE_BP_ADMIN") or role.endswith(
         "ENTERPRISE_BP_OPERATOR"
     ):
         accounts = await _fetch_ebp_accounts(client, agent_id)
@@ -148,17 +193,37 @@ async def sync_all_advertisers(db: Session, only_person: str | None = None) -> A
     updated = 0
     now = datetime.now().replace(microsecond=0)
     kept_ids: set[int] = set()
+    idle_skip: set[int] = set()
+    chengmai = int(row.agent_id or 0) == account_scope.CHENGMAI_AGENT_ID
+    if chengmai:
+        candidate_ids = [int(item["advertiser_id"]) for item in accounts if int(item.get("advertiser_id") or 0)]
+        balances = await _balance_yuan(client, candidate_ids)
+        spent = _spent_ids(db, candidate_ids)
+        for adv_id in candidate_ids:
+            balance = balances.get(adv_id)
+            if adv_id in spent or (balance is not None and balance > 0):
+                continue
+            if balance is not None and balance <= 0:
+                idle_skip.add(adv_id)
     for item in accounts:
         adv_id = int(item["advertiser_id"])
         adv_name = item.get("advertiser_name") or ""
-        if not _has_parentheses(adv_name):
+        if adv_id in idle_skip:
+            continue
+        if (
+            str(row.account_kind or "") != "shop"
+            and not chengmai
+            and not _has_parentheses(adv_name)
+        ):
             continue
         if only_person is not None and person_name(adv_name) != only_person:
             continue
-        kept_ids.add(adv_id)
         existing = db.scalar(
             select(QianchuanAdvertiser).where(QianchuanAdvertiser.advertiser_id == adv_id)
         )
+        if existing is not None and int(existing.agent_id) != agent_id:
+            continue
+        kept_ids.add(adv_id)
         if existing is None:
             db.add(
                 QianchuanAdvertiser(
@@ -179,8 +244,14 @@ async def sync_all_advertisers(db: Session, only_person: str | None = None) -> A
             updated += 1
 
     if only_person is None:
-        for existing in db.scalars(select(QianchuanAdvertiser)).all():
+        for existing in db.scalars(
+            select(QianchuanAdvertiser).where(QianchuanAdvertiser.agent_id == agent_id)
+        ).all():
             if int(existing.advertiser_id) in kept_ids:
+                continue
+            if chengmai:
+                if int(existing.advertiser_id) in idle_skip:
+                    db.delete(existing)
                 continue
             if _has_parentheses(existing.advertiser_name or ""):
                 continue

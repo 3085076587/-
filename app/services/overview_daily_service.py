@@ -20,6 +20,7 @@ from app.models.advertiser import QianchuanAdvertiser
 from app.models.qianchuan_account_daily import QianchuanAccountDaily
 from app.models.qianchuan_overview_daily import QianchuanOverviewDaily
 from app.core.redis_client import get_cache_redis
+from app.services import account_scope
 from app.services.advertiser_dashboard import (
     _has_parentheses,
     fetch_roi2_total,
@@ -100,10 +101,26 @@ def _weighted_from_parts(parts: list[dict[str, Any]]) -> tuple[float | None, flo
 
 
 def _chosen(accounts: list[dict[str, Any]], person: str | None) -> list[tuple[str, dict[str, Any]]]:
-    """和子账户页一样，只保留英文括号里的人名。person 为空时保留全部。"""
-    chosen: list[tuple[str, dict[str, Any]]] = []
+    """组织账号只保留英文括号里的人名。单店账号保留这一家。"""
+    if account_scope.is_shop():
+        chosen: list[tuple[str, dict[str, Any]]] = []
+        for item in accounts:
+            name = str(item.get("advertiser_name") or "").strip() or "当前店铺"
+            if person and name != person:
+                continue
+            chosen.append((name, item))
+        return chosen
+    chosen = []
     for item in accounts:
         name = str(item.get("advertiser_name") or "")
+        if account_scope.is_chengmai() and float(item.get("stat_cost") or 0) <= 0:
+            continue
+        if account_scope.is_chengmai():
+            who = person_name(name) or ""
+            if person and who != person:
+                continue
+            chosen.append((who, item))
+            continue
         if not _has_parentheses(name):
             continue
         who = person_name(name)
@@ -132,8 +149,9 @@ def rollup_people(accounts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     for who, item in _chosen(accounts, None):
         _add(buckets[ALL_PERSON], item)
         items_by_person[ALL_PERSON].append(item)
-        _add(buckets[who], item)
-        items_by_person[who].append(item)
+        if who:
+            _add(buckets[who], item)
+            items_by_person[who].append(item)
     return {key: _finish(bucket, items_by_person[key]) for key, bucket in buckets.items()}
 
 
@@ -143,6 +161,10 @@ def save_overview_day(db: Session, day: str, accounts: list[dict[str, Any]]) -> 
     rows = rollup_people(accounts)
     if not rows:
         rows = {ALL_PERSON: _finish(_blank(), [])}
+    agent = account_scope.agent_id()
+    if not agent:
+        logger.warning("没有当前授权账号，跳过总览日汇总 %s", day)
+        return 0
     official = take_roi2_total(day, day) or {}
     official_rate = official.get("refund_rate_1h")
     for person, metrics in rows.items():
@@ -150,6 +172,7 @@ def save_overview_day(db: Session, day: str, accounts: list[dict[str, Any]]) -> 
         if person == ALL_PERSON and official_rate is not None:
             rate = official_rate
         stmt = mysql_insert(QianchuanOverviewDaily).values(
+            agent_id=int(agent),
             stat_date=stat_date,
             person=person,
             stat_cost=metrics["stat_cost"],
@@ -206,13 +229,24 @@ def _sum_rows(rows: list[QianchuanOverviewDaily]) -> dict[str, Any]:
     return out
 
 
+def _overview_agent_clause():
+    agent = account_scope.agent_id()
+    if not agent:
+        return None
+    return QianchuanOverviewDaily.agent_id == int(agent)
+
+
 def _advertiser_ids(db: Session, person: str | None) -> list[int]:
     ids: list[int] = []
-    for row in db.scalars(select(QianchuanAdvertiser)).all():
+    stmt = select(QianchuanAdvertiser)
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    for row in db.scalars(stmt).all():
         name = row.advertiser_name or ""
-        if not _has_parentheses(name):
+        if not account_scope.keeps_name(name):
             continue
-        who = person_name(name)
+        who = account_scope.owner_label(name)
         if not who:
             continue
         if person and who != person:
@@ -266,13 +300,15 @@ def read_stored_range(db: Session, start: str, end: str, person: str | None) -> 
     key = person or ALL_PERSON
     start_d = date.fromisoformat(start)
     end_d = date.fromisoformat(end)
-    rows = db.scalars(
-        select(QianchuanOverviewDaily).where(
-            QianchuanOverviewDaily.person == key,
-            QianchuanOverviewDaily.stat_date >= start_d,
-            QianchuanOverviewDaily.stat_date <= end_d,
-        )
-    ).all()
+    filters = [
+        QianchuanOverviewDaily.person == key,
+        QianchuanOverviewDaily.stat_date >= start_d,
+        QianchuanOverviewDaily.stat_date <= end_d,
+    ]
+    agent_clause = _overview_agent_clause()
+    if agent_clause is not None:
+        filters.append(agent_clause)
+    rows = db.scalars(select(QianchuanOverviewDaily).where(*filters)).all()
     have = {row.stat_date.isoformat() for row in rows}
     missing: list[str] = []
     cursor = start_d
@@ -338,12 +374,14 @@ async def metrics_for_range(
 def _store_refund_rate(db: Session, day: str, person: str, rate: float) -> None:
     """把原站合计退货率写回这一天。没有这一行就不新建。"""
     stat_date = date.fromisoformat(day)
-    row = db.scalar(
-        select(QianchuanOverviewDaily).where(
-            QianchuanOverviewDaily.stat_date == stat_date,
-            QianchuanOverviewDaily.person == person,
-        )
-    )
+    filters = [
+        QianchuanOverviewDaily.stat_date == stat_date,
+        QianchuanOverviewDaily.person == person,
+    ]
+    agent_clause = _overview_agent_clause()
+    if agent_clause is not None:
+        filters.append(agent_clause)
+    row = db.scalar(select(QianchuanOverviewDaily).where(*filters))
     if row is None:
         return
     row.refund_rate_1h = rate
@@ -353,7 +391,7 @@ def _store_refund_rate(db: Session, day: str, person: str, rate: float) -> None:
 async def official_refund_rate(db: Session, start: str, end: str, person: str | None) -> float | None:
     """这一段的 1 小时退货率直接用工作台合计。15 分钟内同一段不重复拉。失败时返回 None。"""
     person_key = person or ALL_PERSON
-    cache_key = f"ad_helper:roi2_total:v1:{start}:{end}:{person_key}"
+    cache_key = f"ad_helper:roi2_total:v1:{account_scope.agent_id() or 0}:{start}:{end}:{person_key}"
     try:
         raw = await get_cache_redis().get(cache_key)
         if raw:

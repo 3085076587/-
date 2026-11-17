@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import logging
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -13,6 +16,8 @@ from app.clients.oceanengine import OceanEngineClient
 from app.core.config import get_settings
 from app.core.exceptions import AppError, OceanEngineApiError
 from app.core.response import ok
+from app.models.advertiser import QianchuanAdvertiser
+from app.models.workbench_session import WorkbenchSession
 from app.schemas.oauth import SaveTokenIn
 from app.services import oauth_service, token_store
 
@@ -20,16 +25,73 @@ logger = logging.getLogger("uvicorn.error")
 router = APIRouter(tags=["OAuth"])
 
 
+class SelectAccountIn(BaseModel):
+    agent_id: int = Field(..., description="要切换到的授权账号")
+
+
+def _account_payload(db: Session) -> dict:
+    rows = token_store.list_token_rows(db)
+    now_rows = []
+    for row in rows:
+        if not row.agent_id:
+            continue
+        shop_count = db.scalar(
+            select(func.count())
+            .select_from(QianchuanAdvertiser)
+            .where(QianchuanAdvertiser.agent_id == int(row.agent_id))
+        )
+        bench = db.scalar(select(WorkbenchSession).where(WorkbenchSession.ebpid == int(row.agent_id)))
+        now_rows.append(
+            {
+                "agent_id": int(row.agent_id),
+                "agent_name": row.agent_name or "",
+                "account_role": row.account_role or "",
+                "account_kind": row.account_kind or "org",
+                "selected": int(row.selected or 0) == 1,
+                "access_expired": row.expires_at <= token_store._now(),
+                "advertiser_count": int(shop_count or 0),
+                "has_workbench": bench is not None and bool((bench.cookie or "").strip()),
+            }
+        )
+    return {"accounts": now_rows}
+
+
+@router.get("/oauth/accounts", summary="授权账号列表")
+def list_accounts(db: Session = Depends(get_db)):
+    return ok(_account_payload(db))
+
+
+@router.post("/oauth/select", summary="切换当前授权账号")
+def select_account(payload: SelectAccountIn, db: Session = Depends(get_db)):
+    token_store.select_account(db, payload.agent_id)
+    return ok(_account_payload(db))
+
+
 @router.post("/oauth/save-token", summary="保存 OAuth token")
 async def save_token(payload: SaveTokenIn, db: Session = Depends(get_db)):
-    """保存 access_token / refresh_token，并立即拉取管理账户 agent_id。"""
-    data = await oauth_service.save_token(db, payload)
-    agent = await oauth_service.fetch_agent_id(db)
-    result = data.model_dump()
-    result["agent_id"] = agent.agent_id
-    result["agent_name"] = agent.agent_name
-    result["account_role"] = agent.account_role
-    return ok(result)
+    """保存这次授权能看到的全部账号。已经在库里的其他账号不会被盖掉。"""
+    rows = await oauth_service.bind_token_accounts(
+        db,
+        access_token=payload.access_token,
+        refresh_token=payload.refresh_token,
+        expires_in=payload.expires_in,
+        refresh_token_expires_in=payload.refresh_token_expires_in,
+    )
+    current = token_store.selected_row(db) or rows[0]
+    return ok(
+        {
+            "id": current.id,
+            "expires_at": current.expires_at,
+            "refresh_expires_at": current.refresh_expires_at,
+            "agent_id": current.agent_id,
+            "agent_name": current.agent_name,
+            "account_role": current.account_role,
+            "accounts": [
+                {"agent_id": row.agent_id, "agent_name": row.agent_name, "account_kind": row.account_kind}
+                for row in rows
+            ],
+        }
+    )
 
 
 @router.get("/oauth/fetch-agent-id", summary="拉取并回写代理商 agent_id", include_in_schema=False)
@@ -73,16 +135,18 @@ async def oauth_callback(
         token.get("expires_in"),
     )
 
-    row = token_store.save_token(
+    rows = await oauth_service.bind_token_accounts(
         db,
         access_token=token["access_token"],
         refresh_token=token["refresh_token"],
         expires_in=int(token.get("expires_in") or 86400),
         refresh_token_expires_in=int(token.get("refresh_token_expires_in") or 2592000),
     )
-
-    # 授权成功后立刻拉管理账户，不再依赖前端手动点。
-    agent = await oauth_service.fetch_agent_id(db)
+    lines = "<br>".join(
+        html.escape(f"{row.agent_name or '-'} / {row.agent_id} / {row.account_kind or 'org'}")
+        for row in rows
+    )
+    current = token_store.selected_row(db) or rows[0]
 
     accept = (request.headers.get("accept") or "").lower()
     if "text/html" in accept:
@@ -104,8 +168,8 @@ async def oauth_callback(
 <body>
   <div class="box">
     <h1>授权成功</h1>
-    <p>token 已入库，管理账户已自动识别。</p>
-    <p>账户：{agent.agent_name or "-"}<br>agent_id：{agent.agent_id}<br>角色：{agent.account_role or "-"}</p>
+    <p>这次授权里的账号已经分开入库。原来的其他账号还在。</p>
+    <p>{lines}</p>
     <p>2 秒后返回首页，或 <a href="/">立即返回</a>。</p>
   </div>
 </body>
@@ -115,13 +179,22 @@ async def oauth_callback(
     return ok(
         {
             "state": state,
-            "token_id": row.id,
-            "expires_at": row.expires_at,
-            "refresh_expires_at": row.refresh_expires_at,
-            "agent_id": agent.agent_id,
-            "agent_name": agent.agent_name,
-            "account_role": agent.account_role,
+            "token_id": current.id,
+            "expires_at": current.expires_at,
+            "refresh_expires_at": current.refresh_expires_at,
+            "agent_id": current.agent_id,
+            "agent_name": current.agent_name,
+            "account_role": current.account_role,
+            "accounts": [
+                {
+                    "agent_id": row.agent_id,
+                    "agent_name": row.agent_name,
+                    "account_role": row.account_role,
+                    "account_kind": row.account_kind,
+                }
+                for row in rows
+            ],
             "advertiser_ids": token.get("advertiser_ids") or [],
-            "message": "授权成功，token 已入库，agent_id 已自动拉取",
+            "message": "授权成功，账号已分别入库",
         }
     )

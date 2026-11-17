@@ -15,9 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
-from app.models.advertiser import QianchuanAdvertiser
 from app.models.qianchuan_overview_daily import QianchuanOverviewDaily
-from app.services import account_report_service, overview_daily_service, product_report_service, token_store
+from app.services import account_report_service, account_scope, overview_daily_service, product_report_service, token_store
 from app.services.advertiser_dashboard import load_roi2_accounts
 from app.services.daily_sync_status import mark_finished, mark_running
 from app.services.overview_daily_service import ALL_PERSON
@@ -51,18 +50,17 @@ def verify_day_completeness(db: Session, day: str, advertiser_ids: list[int] | N
     """检查某天账户/总览/商品标记是否齐全（不打接口）。"""
     adv_ids = advertiser_ids if advertiser_ids is not None else all_advertiser_ids(db)
     stat = date.fromisoformat(day)
+    overview_filters = [QianchuanOverviewDaily.stat_date == stat]
+    agent = account_scope.agent_id()
+    if agent:
+        overview_filters.append(QianchuanOverviewDaily.agent_id == int(agent))
     overview_rows = db.scalar(
-        select(func.count())
-        .select_from(QianchuanOverviewDaily)
-        .where(QianchuanOverviewDaily.stat_date == stat)
+        select(func.count()).select_from(QianchuanOverviewDaily).where(*overview_filters)
     )
     overview_all = db.scalar(
         select(func.count())
         .select_from(QianchuanOverviewDaily)
-        .where(
-            QianchuanOverviewDaily.stat_date == stat,
-            QianchuanOverviewDaily.person == ALL_PERSON,
-        )
+        .where(*overview_filters, QianchuanOverviewDaily.person == ALL_PERSON)
     )
     missing_account = account_report_service.advertisers_missing_account_day(db, day, adv_ids)
     missing_product = product_report_service.advertisers_missing_product_marker(db, day, adv_ids)
@@ -140,11 +138,13 @@ async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
 
         accounts: list[dict[str, Any]] = []
         try:
-            accounts = await async_retry(
-                load_accounts,
-                attempts=retries,
-                base_delay_seconds=base_delay,
-                label=f"每日同步-工作台 {day}",
+            accounts = account_scope.only_this_shop(
+                await async_retry(
+                    load_accounts,
+                    attempts=retries,
+                    base_delay_seconds=base_delay,
+                    label=f"每日同步-工作台 {day}",
+                )
             )
         except Exception as exc:  # noqa: BLE001
             result["account_rows"] = -1
@@ -152,13 +152,18 @@ async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
             logger.exception("每日同步-工作台失败 %s：%s", day, exc)
             accounts = []
 
+        if account_scope.is_chengmai():
+            accounts = [item for item in accounts if float(item.get("stat_cost") or 0) > 0]
         if accounts:
             try:
                 result["account_rows"] = account_report_service.upsert_account_day_rows(db, day, accounts)
-                adv_ids_early = all_advertiser_ids(db)
-                result["account_zero_filled"] = account_report_service.fill_missing_account_days_zero(
-                    db, day, adv_ids_early
-                )
+                if account_scope.is_chengmai():
+                    result["account_zero_filled"] = 0
+                else:
+                    adv_ids_early = all_advertiser_ids(db)
+                    result["account_zero_filled"] = account_report_service.fill_missing_account_days_zero(
+                        db, day, adv_ids_early
+                    )
             except Exception as exc:  # noqa: BLE001
                 result["account_rows"] = -1
                 logger.exception("每日同步-账户日表失败 %s：%s", day, exc)
@@ -168,7 +173,11 @@ async def sync_day_all(db: Session, day: str) -> dict[str, Any]:
                 result["overview_rows"] = -1
                 logger.exception("每日同步-总览汇总失败 %s：%s", day, exc)
 
-        adv_ids = all_advertiser_ids(db)
+        adv_ids = (
+            [int(item["advertiser_id"]) for item in accounts]
+            if account_scope.is_chengmai()
+            else all_advertiser_ids(db)
+        )
         pre_markers = product_report_service.finalize_product_markers_for_day(db, day, adv_ids)
         need_pull = product_report_service.advertisers_missing_product_marker(db, day, adv_ids)
         logger.info(

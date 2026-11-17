@@ -7,7 +7,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -16,10 +16,11 @@ from app.core.database import Base
 class QianchuanOverviewDaily(Base):
     __tablename__ = "qianchuan_overview_daily"
     __table_args__ = (
-        UniqueConstraint("stat_date", "person", name="uk_overview_date_person"),
+        UniqueConstraint("agent_id", "stat_date", "person", name="uk_overview_agent_date_person"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="主键")
+    agent_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True, comment="授权账号 agent_id")
     stat_date: Mapped[date] = mapped_column(Date, nullable=False, index=True, comment="统计日期")
     person: Mapped[str] = mapped_column(
         String(64), nullable=False, default="", comment="运营姓名，空字符串表示全部"

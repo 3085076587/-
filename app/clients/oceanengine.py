@@ -17,6 +17,21 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import OceanEngineApiError
 
 logger = logging.getLogger("uvicorn.error")
+_SECRET_KEYS = {"secret", "refresh_token", "access_token", "auth_code", "password", "access-token"}
+
+
+def _redact(value: Any) -> Any:
+    """日志里不留密钥和 token。"""
+    if isinstance(value, dict):
+        return {
+            key: "***" if str(key).lower() in _SECRET_KEYS else _redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, tuple) and len(value) == 2 and str(value[0]).lower() in _SECRET_KEYS:
+        return (value[0], "***")
+    return value
 
 # token 失效才刷新。40100 / 40110 / 40130 是频控，不能当成 token 过期去立刻重试。
 TOKEN_EXPIRED_CODES = {40102, 40103, 40104, 40105, 40107}
@@ -128,9 +143,9 @@ class OceanEngineClient:
             "巨量请求 %s %s\nheaders=%s\nparams=%s\nbody=%s",
             method,
             url,
-            self._dump({k: ("***" if k == "Access-Token" else v) for k, v in headers.items()}),
-            self._dump(query or {}),
-            self._dump(json_body or {}),
+            self._dump(_redact({k: ("***" if k == "Access-Token" else v) for k, v in headers.items()})),
+            self._dump(_redact(query or {})),
+            self._dump(_redact(json_body or {})),
         )
 
         response = await self._http().request(
@@ -149,7 +164,7 @@ class OceanEngineClient:
                 data={"text": response.text[:800]},
             ) from exc
 
-        logger.info("巨量响应 %s %s\n%s", method, url, self._dump(body))
+        logger.info("巨量响应 %s %s\n%s", method, url, self._dump(_redact(body)))
 
         if not isinstance(body, dict):
             raise OceanEngineApiError("巨量响应格式异常", data={"body": body})

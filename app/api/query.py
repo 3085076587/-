@@ -11,9 +11,8 @@ from app.core.response import ok
 from app.models.ad_plan import QianchuanAdPlan
 from app.models.ad_report import QianchuanAdReport
 from app.models.advertiser import QianchuanAdvertiser
-from app.services import token_store
+from app.services import account_scope, token_store
 from app.services.account_access import assert_advertiser_access, current_username, visible_advertiser_ids
-from app.services.advertiser_dashboard import _has_parentheses
 
 router = APIRouter(tags=["Query"])
 
@@ -48,6 +47,7 @@ def oauth_status(db: Session = Depends(get_db)):
             "refresh_expires_at": _dt(row.refresh_expires_at),
             "access_expired": row.expires_at <= now,
             "refresh_expired": row.refresh_expires_at <= now,
+            "account_kind": row.account_kind or "org",
         }
     )
 
@@ -56,13 +56,15 @@ def oauth_status(db: Session = Depends(get_db)):
 def list_advertisers(request: Request, db: Session = Depends(get_db)):
     username = current_username(request)
     allowed = visible_advertiser_ids(db, username)
-    rows = db.scalars(
-        select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())
-    ).all()
+    stmt = select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    rows = db.scalars(stmt).all()
     visible = []
     for r in rows:
         adv_name = r.advertiser_name or ""
-        if not _has_parentheses(adv_name):
+        if not account_scope.keeps_name(adv_name):
             continue
         if allowed is not None and int(r.advertiser_id) not in allowed:
             continue

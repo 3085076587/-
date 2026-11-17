@@ -9,7 +9,7 @@ from app.models.advertiser import QianchuanAdvertiser
 from app.models.sys_user import SysUser
 from app.models.team_member_perm import TeamMemberPerm
 from app.models.team_shop_access import TeamShopAccess
-from app.services.advertiser_dashboard import _has_parentheses, person_name
+from app.services import account_scope
 
 ADMIN_USERNAME = "admin"
 EFFECT_GRANT = 1
@@ -33,8 +33,12 @@ def require_admin(username: str) -> None:
 
 
 def _shops(db: Session) -> list[QianchuanAdvertiser]:
-    rows = db.scalars(select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())).all()
-    return [row for row in rows if _has_parentheses(row.advertiser_name or "")]
+    stmt = select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    rows = db.scalars(stmt).all()
+    return [row for row in rows if account_scope.keeps_name(row.advertiser_name or "")]
 
 
 def _overrides(db: Session, username: str) -> dict[int, int]:
@@ -59,7 +63,7 @@ def visible_advertiser_ids(db: Session, username: str) -> set[int] | None:
     visible: set[int] = set()
     for row in _shops(db):
         adv_id = int(row.advertiser_id)
-        owner = person_name(row.advertiser_name or "")
+        owner = account_scope.owner_label(row.advertiser_name or "")
         if shop_visible(owner, username, overrides.get(adv_id)):
             visible.add(adv_id)
     return visible
@@ -74,7 +78,7 @@ def people_for_visible(db: Session, advertiser_ids: set[int]) -> list[str]:
     for row in _shops(db):
         if int(row.advertiser_id) not in advertiser_ids:
             continue
-        owner = person_name(row.advertiser_name or "")
+        owner = account_scope.owner_label(row.advertiser_name or "")
         if not owner or owner in seen:
             continue
         seen.add(owner)
@@ -144,7 +148,7 @@ def member_shops(db: Session, username: str) -> dict:
     shops = []
     for row in _shops(db):
         adv_id = int(row.advertiser_id)
-        owner = person_name(row.advertiser_name or "") or ""
+        owner = account_scope.owner_label(row.advertiser_name or "") or ""
         shops.append(
             {
                 "advertiser_id": adv_id,
@@ -177,7 +181,7 @@ def save_visible_shops(
     db.execute(delete(TeamShopAccess).where(TeamShopAccess.username == username))
     for row in _shops(db):
         adv_id = int(row.advertiser_id)
-        owner = person_name(row.advertiser_name or "")
+        owner = account_scope.owner_label(row.advertiser_name or "")
         want = adv_id in wanted
         owned = owner == username
         if want and not owned:
