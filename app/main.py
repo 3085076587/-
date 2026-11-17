@@ -194,6 +194,12 @@ def page_overview():
     return _render_page("overview.html")
 
 
+@app.get("/compare", response_class=HTMLResponse, include_in_schema=False)
+def page_compare():
+    """两个授权账号的总览和合计。"""
+    return _render_page("compare.html")
+
+
 @app.get("/plans", response_class=HTMLResponse, include_in_schema=False)
 def page_plans():
     """计划与 ROI。"""

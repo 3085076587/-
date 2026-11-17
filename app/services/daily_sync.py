@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
+from app.models.advertiser import QianchuanAdvertiser
 from app.models.qianchuan_overview_daily import QianchuanOverviewDaily
 from app.services import account_report_service, account_scope, overview_daily_service, product_report_service, token_store
 from app.services.advertiser_dashboard import load_roi2_accounts
@@ -33,7 +34,12 @@ def yesterday_str() -> str:
 
 
 def all_advertiser_ids(db: Session) -> list[int]:
-    return [int(x) for x in db.scalars(select(QianchuanAdvertiser.advertiser_id)).all()]
+    """当前授权账号下的店铺。没有套上账号时才返回全部，避免两家的验收混在一起。"""
+    stmt = select(QianchuanAdvertiser.advertiser_id)
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    return [int(x) for x in db.scalars(stmt).all()]
 
 
 def _iter_days(start: str, end: str) -> list[str]:

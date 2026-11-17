@@ -37,6 +37,14 @@
       label: "授权账号信息",
       icon: '<path d="M4 19V5M4 19h16M8 17V9M12 17V7M16 17v-4"/>',
     },
+    {
+      key: "compare",
+      href: "/compare",
+      label: "账号合计",
+      id: "nav-compare",
+      hidden: true,
+      icon: '<path d="M4 5h16v6H4z"/><path d="M4 13h16v6H4z"/>',
+    },
   ];
 
   mount.innerHTML = `
@@ -80,6 +88,13 @@
       '<span class="topbar-user-name" id="topbar-user"></span>';
     topbarRight.insertBefore(wrap, topbarRight.firstChild);
   }
+  if (topbarRight && !document.getElementById("topbar-account")) {
+    const account = document.createElement("span");
+    account.id = "topbar-account";
+    account.className = "topbar-account hidden";
+    const pill = document.getElementById("token-pill");
+    topbarRight.insertBefore(account, pill || null);
+  }
   async function loadTopbarUser() {
     let me = null;
     if (window.AdHelper && typeof window.AdHelper.refreshTopbarUser === "function") {
@@ -95,9 +110,34 @@
     }
     const team = document.getElementById("nav-team");
     if (team && me && me.username === "admin") team.classList.remove("hidden");
+    const compare = document.getElementById("nav-compare");
+    if (compare && me && me.username === "admin") compare.classList.remove("hidden");
     return me;
   }
+  async function loadCurrentAccount() {
+    const node = document.getElementById("topbar-account");
+    if (!node) return;
+    try {
+      const resp = await fetch("/api/oauth/accounts");
+      const body = await resp.json();
+      const accounts = body && body.code === 0 && body.data ? body.data.accounts || [] : [];
+      const current = accounts.find((item) => item.selected) || accounts[0];
+      const name = current ? String(current.agent_name || current.agent_id || "").trim() : "";
+      if (!name) {
+        node.classList.add("hidden");
+        node.textContent = "";
+        node.removeAttribute("title");
+        return;
+      }
+      node.classList.remove("hidden");
+      node.textContent = name;
+      node.title = "当前授权账号：" + name;
+    } catch (_) {
+      node.classList.add("hidden");
+    }
+  }
   loadTopbarUser().catch(() => {});
+  loadCurrentAccount().catch(() => {});
 
   const logoutBtn = document.getElementById("btn-logout");
   if (logoutBtn) {

@@ -42,6 +42,30 @@ async def overview_summary(
     return ok(data)
 
 
+@router.get("/overview/compare", summary="两个授权账号的总览和合计")
+async def overview_compare(
+    request: Request,
+    start_date: str | None = Query(None, description="开始 yyyy-MM-dd，默认今天"),
+    end_date: str | None = Query(None, description="结束 yyyy-MM-dd，默认今天"),
+    db: Session = Depends(get_db),
+):
+    username = current_username(request)
+    if not is_admin(username):
+        raise AppError("只有管理员可以看账号合计", code=40301)
+    today = date.today().isoformat()
+    start = start_date or today
+    end = end_date or today
+    try:
+        date.fromisoformat(start)
+        date.fromisoformat(end)
+    except ValueError as exc:
+        raise AppError("日期格式应为 yyyy-MM-dd", code=40001) from exc
+    if start > end:
+        raise AppError("开始日期不能晚于结束日期", code=40001)
+    data = await overview_service.build_accounts_compare(db, start, end)
+    return ok(data)
+
+
 @router.get("/overview/progress", summary="总览拉取进度")
 async def overview_progress(key: str = Query(..., description="start~end")):
     data = await get_progress(key)

@@ -1657,3 +1657,98 @@ async def build_overview(
         if official:
             apply_official_site_money(result, official)
     return result
+
+
+def _empty_compare_board() -> dict[str, Any]:
+    return {
+        "stat_cost": 0.0,
+        "total_profit": 0.0,
+        "profit_rate": None,
+        "pay_amount": 0.0,
+        "pay_roi": None,
+        "settle_amount": 0.0,
+        "settle_roi": None,
+        "refund_rate_1h": None,
+        "people_count": 0,
+    }
+
+
+def _compare_board(data: dict[str, Any]) -> dict[str, Any]:
+    """跟数据总览卡片同一套数：金额用工作台合计，利润仍走现有公式。"""
+    kpis = data.get("kpis") or {}
+    board = data.get("workbench") or {}
+    cost = board.get("stat_cost")
+    if cost is None:
+        cost = kpis.get("total_cost")
+    return {
+        "stat_cost": round(float(cost or 0), 2),
+        "total_profit": round(float(kpis.get("total_profit") or 0), 2),
+        "profit_rate": board.get("profit_rate"),
+        "pay_amount": round(float(board.get("pay_amount") or 0), 2),
+        "pay_roi": board.get("pay_roi"),
+        "settle_amount": round(float(board.get("settle_amount") or 0), 2),
+        "settle_roi": board.get("settle_roi"),
+        "refund_rate_1h": board.get("refund_rate_1h"),
+        "people_count": int(kpis.get("people_count") or 0),
+        "start_date": data.get("start_date") or "",
+        "end_date": data.get("end_date") or "",
+        "from_cache": bool(data.get("from_cache")),
+        "cached_at": str(data.get("cached_at") or ""),
+        "note": str(data.get("note") or ""),
+    }
+
+
+def _sum_compare_boards(boards: list[dict[str, Any]]) -> dict[str, Any]:
+    """金额和运营数相加。ROI、利润率、1 小时退款率用加总后的金额重算。"""
+    cost = round(sum(float(item.get("stat_cost") or 0) for item in boards), 2)
+    pay = round(sum(float(item.get("pay_amount") or 0) for item in boards), 2)
+    settle = round(sum(float(item.get("settle_amount") or 0) for item in boards), 2)
+    profit = round(sum(float(item.get("total_profit") or 0) for item in boards), 2)
+    people = sum(int(item.get("people_count") or 0) for item in boards)
+    return {
+        "stat_cost": cost,
+        "total_profit": profit,
+        "profit_rate": round(profit / pay, 6) if pay > 0 else None,
+        "pay_amount": pay,
+        "pay_roi": round(pay / cost, 4) if cost > 0 else None,
+        "settle_amount": settle,
+        "settle_roi": round(settle / cost, 4) if cost > 0 else None,
+        "refund_rate_1h": overview_daily_service._merge_refund_rate(boards),
+        "people_count": people,
+    }
+
+
+async def build_accounts_compare(db: Session, start: str, end: str) -> dict[str, Any]:
+    """每个授权账号各算一遍数据总览，再出一块合计。当前选中的账号排在最上面。"""
+    picked: list[tuple[int, str, str, int]] = []
+    for row in token_store.list_token_rows(db):
+        if not row.agent_id:
+            continue
+        picked.append(
+            (
+                int(row.agent_id),
+                str(row.agent_name or row.agent_id),
+                str(row.account_kind or "org"),
+                int(row.selected or 0),
+            )
+        )
+    picked.sort(key=lambda item: (0 if item[3] == 1 else 1, item[0]))
+    accounts: list[dict[str, Any]] = []
+    for agent, name, kind, _selected in picked:
+        with account_scope.activated_agent(agent, kind, name):
+            try:
+                data = await build_overview(db, start, end, None, force=False)
+                board = _compare_board(data)
+                error = ""
+            except Exception:
+                logger.exception("账号合计读取失败 agent_id=%s", agent)
+                board = _empty_compare_board()
+                error = "这个账号的总览没有读出来"
+        accounts.append({"agent_id": agent, "agent_name": name, "error": error, **board})
+    ready = [item for item in accounts if not item.get("error")]
+    return {
+        "start_date": start,
+        "end_date": end,
+        "accounts": accounts,
+        "total": _sum_compare_boards(ready),
+    }
