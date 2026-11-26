@@ -333,6 +333,24 @@ async def _plans_from_qianchuan_page(db, advertiser_id: int, start: str, end: st
     }
 
 
+@router.get("/product/refund-rates", summary="商品退款率列表，页面用来算利润")
+async def list_product_refund_rates(request: Request):
+    current_username(request)
+    rows = await product_refund_api.load_rates()
+    data = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        product_id = str(row.get("product_id") or "").strip()
+        if not product_id or product_id == "0":
+            continue
+        rate = row.get("refund_rate")
+        if rate == "":
+            rate = None
+        data.append({"product_id": product_id, "refund_rate": rate})
+    return ok(data)
+
+
 @router.post("/product/refund-rate", summary="保存商品实际退款率")
 async def save_product_refund(
     payload: SaveProductRefundIn,
