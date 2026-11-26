@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # 巨量频控后单请求最多再试几次（与 daily_sync 的账户级重试叠加）
     OCEAN_RATE_LIMIT_RETRIES: int = 6
 
-    # 预设区间缓存预热间隔（秒），默认半小时
+    # token 检查间隔（秒），默认半小时
     DASHBOARD_CACHE_INTERVAL_SECONDS: int = 1800
 
     # 登录账号在 sys_user 表，密码只存哈希。这里只保留会话签名密钥。

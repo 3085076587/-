@@ -264,3 +264,55 @@ async def sync_all_advertisers(db: Session, only_person: str | None = None) -> A
         created=created,
         updated=updated,
     )
+
+
+def ensure_seen_advertisers(db: Session, accounts: list[dict]) -> int:
+    """工作台已经出现、本地广告主表还没有的店，补进表。不删已有店，也不打开放平台。"""
+    agent = account_scope.agent_id()
+    if not agent or not accounts:
+        return 0
+    pending: dict[int, str] = {}
+    for item in accounts:
+        try:
+            adv_id = int(item.get("advertiser_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        name = str(item.get("advertiser_name") or "").strip()
+        if not adv_id or not name or not account_scope.keeps_name(name):
+            continue
+        pending[adv_id] = name[:255]
+    if not pending:
+        return 0
+    existing = {
+        int(item)
+        for item in db.scalars(
+            select(QianchuanAdvertiser.advertiser_id).where(
+                QianchuanAdvertiser.advertiser_id.in_(list(pending))
+            )
+        ).all()
+    }
+    now = datetime.now().replace(microsecond=0)
+    created = 0
+    for adv_id, name in pending.items():
+        if adv_id in existing:
+            continue
+        db.add(
+            QianchuanAdvertiser(
+                agent_id=int(agent),
+                advertiser_id=adv_id,
+                advertiser_name=name,
+                status="ACTIVE",
+                sync_time=now,
+            )
+        )
+        created += 1
+    if not created:
+        return 0
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("补入工作台新店失败", exc_info=True)
+        return 0
+    logger.info("工作台新店已补入广告主表 %s 个", created)
+    return created

@@ -6,7 +6,7 @@
   <title>数据总览 · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261117b">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261123e">
 </head>
 <body>
 <div class="layout">
@@ -19,45 +19,62 @@
       </div>
     </header>
     <main class="content">
-      <div class="panel" style="padding-bottom:14px;">
-        <div class="toolbar toolbar-wrap">
-          <div class="panel-title" style="margin:0;">数据总览</div>
-          <div class="spacer"></div>
-          <div class="field">
-            <label>时间</label>
-            <select id="ov-range">
-              <option value="today" selected>今天</option>
-              <option value="yesterday">昨天</option>
-              <option value="7">7天内</option>
-              <option value="30">30天内</option>
-              <option value="custom">自定义</option>
-            </select>
-          </div>
-          <div class="field ov-custom hidden"><label>开始</label><input type="date" id="ov-start"></div>
-          <div class="field ov-custom hidden"><label>结束</label><input type="date" id="ov-end"></div>
-          <div class="field hidden" id="person-field">
-            <label>运营</label>
-            <select id="ov-person"><option value="">全部</option></select>
-          </div>
-          <button class="btn btn-primary" id="btn-query">查询</button>
-          <button class="btn" id="btn-export">导出</button>
+      <div class="report-head">
+        <div>
+          <h1 class="report-title">数据总览</h1>
+          <p class="report-sub">预估利润固定按 15% 退款率。利润按商品退款率接口，没有这个商品的退款率就不算。手填佣金优先，没有再用名称里的「佣金:xx%」，都没有的商品不计入。</p>
         </div>
-        <p class="hint">利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。实际退款率用插件或页面手填的，没填按 0。佣金先用插件手填的，没填再用商品或计划名称里的「佣金:xx%」，都没有的商品不计入。</p>
-        <p class="hint">预估总利润是所有商品的利润相加。看今天时用 Redis 里的净成交和消耗来算，看昨天及以前时用数据库里的商品日数据来算，两边各自加总后再合成这一段。</p>
-        <p class="hint">顶部的 1 小时内退款率直接用工作台这一段时间的合计，和原站数据概览同一笔。选一个人时，只取这个人账户的合计。这一段还没有合计时会重新拉一次。</p>
-        <p class="hint" id="ov-meta">-</p>
+        <div class="range-pills" id="range-pills">
+          <button type="button" class="pill active" data-range="today">今天</button>
+          <button type="button" class="pill" data-range="yesterday">昨天</button>
+          <button type="button" class="pill" data-range="7">近7天</button>
+          <button type="button" class="pill" data-range="30">近30天</button>
+          <button type="button" class="pill" data-range="month">本月</button>
+          <button type="button" class="pill" data-range="custom">自定义</button>
+          <button class="pill pill-solid" id="btn-query" type="button">刷新</button>
+          <button class="pill" id="btn-export" type="button">导出</button>
+        </div>
       </div>
+      <div class="toolbar toolbar-wrap ov-dates">
+        <select id="ov-range" class="hidden">
+          <option value="today" selected>今天</option>
+          <option value="yesterday">昨天</option>
+          <option value="7">近7天</option>
+          <option value="30">近30天</option>
+          <option value="month">本月</option>
+          <option value="custom">自定义</option>
+        </select>
+        <div class="field ov-custom hidden"><label>开始</label><input type="date" id="ov-start"></div>
+        <div class="field ov-custom hidden"><label>结束</label><input type="date" id="ov-end"></div>
+      </div>
+      <div class="filter-bar">
+        <div class="person-chips hidden" id="person-field">
+          <button type="button" class="chip active" data-person="">全部账户</button>
+          <span id="person-chips"></span>
+          <select id="ov-person" class="hidden"><option value="">全部</option></select>
+        </div>
+        <label class="ov-search">
+          <input id="ov-search" type="search" placeholder="搜索账户" autocomplete="off">
+        </label>
+      </div>
+      <p class="hint" id="ov-meta">-</p>
+      <p class="hint">点账户名称只看这一户。</p>
 
-      <div class="stats stats-overview">
-        <div class="stat-card"><div class="stat-num ov-purple" id="kpi-cost">-</div><div class="stat-label">总消耗</div></div>
-        <div class="stat-card"><div class="stat-num ov-purple" id="kpi-profit">-</div><div class="stat-label">预估总利润</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-profit-rate">-</div><div class="stat-label">预估总利润率</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-pay">-</div><div class="stat-label">用户实际支付金额</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-pay-roi">-</div><div class="stat-label">整体支付 ROI</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-settle">-</div><div class="stat-label">净成交金额</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-settle-roi">-</div><div class="stat-label">净成交 ROI</div></div>
-        <div class="stat-card"><div class="stat-num" id="kpi-refund">-</div><div class="stat-label">1小时内退款率</div></div>
-        <div class="stat-card"><div class="stat-num ov-blue" id="kpi-people">-</div><div class="stat-label">运营数</div></div>
+      <div class="stats stats-kpi">
+        <div class="stat-card kpi-ref"><div class="stat-label">总消耗</div><div class="stat-num" id="kpi-cost">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">总净成交额</div><div class="stat-num" id="kpi-settle">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">预估利润</div><div class="stat-num num-gain" id="kpi-profit">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">利润</div><div class="stat-num" id="kpi-real-profit">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">平均ROI</div><div class="stat-num kpi-roi" id="kpi-settle-roi">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">账户数</div><div class="stat-num" id="kpi-accounts">—</div></div>
+      </div>
+      <div class="stats stats-extra">
+        <div class="stat-card kpi-ref"><div class="stat-label">用户实际支付金额</div><div class="stat-num" id="kpi-pay">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">整体支付 ROI</div><div class="stat-num" id="kpi-pay-roi">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">预估总利润率</div><div class="stat-num" id="kpi-profit-rate">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">利润率</div><div class="stat-num" id="kpi-real-rate">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">1小时内退款率</div><div class="stat-num" id="kpi-refund">-</div></div>
+        <div class="stat-card kpi-ref"><div class="stat-label">运营数</div><div class="stat-num" id="kpi-people">-</div></div>
       </div>
 
       <div class="panel chart-panel">
@@ -66,8 +83,38 @@
           <div class="spacer"></div>
           <div class="trend-picks" id="trend-picks"></div>
         </div>
-        <p class="hint">勾选后画在同一张图上。金额用左轴，预估总利润率用右轴，等于当天预估利润 ÷ 当天用户实际支付金额。</p>
+        <p class="hint">勾选后画在同一张图上。金额用左轴，利润率用右轴。利润按当天计划和商品退款率接口相加，利润率等于当天利润 ÷ 当天用户实际支付金额。</p>
         <div class="chart-box" id="chart-daily"></div>
+      </div>
+
+      <div class="panel">
+        <div class="toolbar">
+          <div class="panel-title" style="margin:0;" id="account-title">账户明细</div>
+          <button type="button" class="pill hidden" id="btn-clear-focus">看全部账户</button>
+          <div class="spacer"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="report-table" id="account-table">
+            <thead>
+              <tr>
+                <th>账户名称</th>
+                <th>账户ID</th>
+                <th class="sortable" data-sort="stat_cost">消耗 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="pay_amount">用户实际支付金额 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="pay_roi">整体支付 ROI <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="settle_amount">净成交额 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="settle_roi">净成交 ROI <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="profit">预估利润 <span class="sort-ind"></span></th>
+                <th class="sortable" data-sort="real_profit">利润 <span class="sort-ind"></span></th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="account-tbody">
+              <tr><td colspan="11" class="empty">正在加载…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div class="chart-grid">
@@ -84,7 +131,7 @@
   <div class="loading-box">
     <div class="spinner"></div>
     <div class="loading-title" id="loading-title">正在加载数据…</div>
-    <div class="loading-sub muted">历史日期应已凌晨入库；若仍缺数据会补拉商品报表。同区间第二次查询走缓存秒开</div>
+    <div class="loading-sub muted">进页面先用已经缓存的数据。点刷新才会重新向千川要这一段。</div>
     <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
     <div class="loading-msg muted" id="loading-msg">0%</div>
   </div>
@@ -92,7 +139,7 @@
 
 <script src="/static/js/echarts.min.js"></script>
 <script src="/static/js/common.js?v=20261103u"></script>
-<script src="/static/js/partials.js?v=20261117e"></script>
-<script src="/static/js/overview.js?v=20261106g"></script>
+<script src="/static/js/partials.js?v=20261123k"></script>
+<script src="/static/js/overview.js?v=20261124m"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 """数据总览：消耗来自工作台账户表。昨天及以前的利润来自商品日表。
 
-利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。
+利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。实际退款率没填或为 0 时按 15% 扣。
 佣金先用手填，没有再解析名称，都没有的商品不计入。
 今天用 Redis 里的计划净成交和消耗，历史用数据库里的商品日表。总利润是这些商品相加。
 
@@ -614,6 +614,130 @@ async def _compute_today(db: Session, today: str, prog_key: str | None) -> dict[
     }
 
 
+def _merge_profit(left: dict[int, float], right: dict[int, float]) -> dict[int, float]:
+    out = dict(left)
+    for adv_id, val in right.items():
+        out[int(adv_id)] = round(out.get(int(adv_id), 0.0) + float(val), 2)
+    return out
+
+
+def _plan_api_profits(
+    plans: list[dict[str, Any]],
+    advertiser_id: int,
+    rates: dict[int, float],
+    meta_map: dict[tuple[int, int], dict[str, Any]],
+    user_by_ad: dict[int, float],
+) -> float | None:
+    """一个账户今天缓存里的计划，按商品退款率逐条相加。没有可算的计划返回 None。"""
+    total = 0.0
+    counted = False
+    for plan in plans:
+        try:
+            pid = int(plan.get("product_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not pid or pid not in rates:
+            continue
+        try:
+            ad_id = int(plan.get("ad_id") or 0)
+        except (TypeError, ValueError):
+            ad_id = 0
+        typed = user_by_ad.get(ad_id)
+        if typed is None:
+            try:
+                saved = float(plan.get("commission_pct"))
+            except (TypeError, ValueError):
+                saved = 0.0
+            typed = saved if saved > 0 else None
+        value = product_report_service.api_line_profit(
+            settle=plan.get("settle_amount"),
+            cost=plan.get("stat_cost"),
+            rate_percent=rates[pid],
+            meta=meta_map.get((int(advertiser_id), pid)),
+            plan_name=str(plan.get("ad_name") or ""),
+            product_name=str(plan.get("product_name") or ""),
+            user_commission=typed,
+        )
+        if value is None:
+            continue
+        total += value
+        counted = True
+    return round(total, 2) if counted else None
+
+
+async def real_profit_breakdown(
+    db: Session,
+    start: str,
+    end: str,
+    people: list[str] | None = None,
+    allowed_ids: set[int] | None = None,
+) -> tuple[dict[int, float], dict[str, float]]:
+    """区间内每个账户、每一天的利润。昨天及以前用商品日表，今天用已缓存的计划，不打千川。"""
+    from app.services import product_refund_api
+
+    try:
+        rate_rows = await product_refund_api.load_rates()
+    except AppError as exc:
+        logger.warning("商品退款率没拿到，这段利润先空着：%s", exc.msg)
+        return {}, {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("商品退款率没拿到，这段利润先空着：%s", exc)
+        return {}, {}
+    rates = product_report_service.refund_rate_map(rate_rows)
+    if not rates:
+        return {}, {}
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    today = date.today()
+    if end_d > today:
+        end_d = today
+    if start_d > end_d:
+        return {}, {}
+    yesterday = today - timedelta(days=1)
+    hist_end = yesterday if end_d >= today else end_d
+    ids = _scope_advertiser_ids(db, people, allowed_ids)
+    if allowed_ids is not None:
+        ids = [item for item in ids if item in allowed_ids]
+    if not ids:
+        return {}, {}
+    name_commission = await _plan_name_commissions(db, ids)
+    by_adv: dict[int, float] = {}
+    by_day: dict[str, float] = {}
+    if start_d <= hist_end:
+        adv_part, day_part = product_report_service.api_profits_from_product_daily(
+            db,
+            start_d.isoformat(),
+            hist_end.isoformat(),
+            rates,
+            name_commission,
+            ids,
+        )
+        by_adv = _merge_profit(by_adv, adv_part)
+        by_day.update(day_part)
+    if start_d <= today <= end_d:
+        cached = await today_plan_cache.mget_accounts(today.isoformat(), ids)
+        users = plan_commission_sync.user_commissions_by_advertiser(db, list(cached))
+        meta = product_report_service.load_product_meta(db, list(cached))
+        today_total = 0.0
+        today_counted = False
+        for adv_id, item in cached.items():
+            value = _plan_api_profits(
+                list(item.get("plans") or []),
+                int(adv_id),
+                rates,
+                meta,
+                users.get(int(adv_id), {}),
+            )
+            if value is None:
+                continue
+            by_adv = _merge_profit(by_adv, {int(adv_id): value})
+            today_total += value
+            today_counted = True
+        if today_counted:
+            by_day[today.isoformat()] = round(today_total, 2)
+    return by_adv, by_day
+
+
 async def today_account_profits() -> dict[int, float] | None:
     """读今天缓存里每个店铺的利润。缓存还没有分店铺数据时返回 None，不打接口。"""
     cached = await _read_cache(_today_key(date.today().isoformat()))
@@ -813,7 +937,7 @@ async def _accounts_matching_advertiser_page(
     end: str,
     people: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """读账户授权正在用的那份账户表。预设区间走同一份缓存，自定义日期再拉工作台。"""
+    """读账户表。预设区间走缓存。结束日早于今天的区间读账户日表。其余再拉工作台。"""
     from app.services import dashboard_cache
     from app.services.advertiser_dashboard import dashboard_from_accounts, list_people
 
@@ -822,7 +946,10 @@ async def _accounts_matching_advertiser_page(
     if key and names:
         data = await dashboard_cache.fetch_people(db, key, names, force=False, scope_all=False)
         return list(data.get("accounts") or [])
-    rows = await load_roi2_accounts(start, end)
+    if end < date.today().isoformat():
+        rows = account_report_service.dashboard_accounts(db, start, end)
+    else:
+        rows = await load_roi2_accounts(start, end)
     only = names[0] if people and len(people) == 1 else None
     kept = set(account_scope.scoped_advertiser_ids(db)) if account_scope.is_chengmai() else None
     accounts = list(dashboard_from_accounts(rows, start, end, only, kept).get("accounts") or [])
@@ -1514,11 +1641,11 @@ async def build_overview(
     ])
     errors = list(history["errors"] if history else []) + today_errors
     if has_history and include_today:
-        note = "利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。昨天及以前用数据库里的商品相加，今天用 Redis 里的商品相加。手填佣金优先，没有再用名称里的佣金。"
+        note = "利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。实际退款率没填或为 0 时按 15% 扣。昨天及以前用数据库里的商品相加，今天用 Redis 里的商品相加。手填佣金优先，没有再用名称里的佣金。"
         from_cache = bool(history["from_cache"]) and today_cache
         cached_at = max(history["cached_at"], today_at)
     elif include_today:
-        note = "今天的利润用 Redis 里各商品的净成交和消耗相加。手填的实际退款率和佣金优先，佣金没填再用名称，都没有的商品不计入。"
+        note = "今天的利润用 Redis 里各商品的净成交和消耗相加。实际退款率没填或为 0 时按 15% 扣。手填的实际退款率和佣金优先，佣金没填再用名称，都没有的商品不计入。"
         from_cache = today_cache
         cached_at = today_at
     else:
@@ -1581,6 +1708,7 @@ async def build_overview(
         history.get("name_commission") if history else None,
         allowed_ids,
     )
+    await _stamp_trend_real_profits(db, result, people, allowed_ids)
     fetch_today = bool(include_today and today_part is None and snapshot is not None and not snapshot.get("pending"))
     try:
         metrics = await overview_daily_service.metrics_for_range(
@@ -1594,6 +1722,8 @@ async def build_overview(
     except Exception as exc:  # noqa: BLE001
         logger.warning("总览工作台汇总失败：%s", exc)
         result["workbench"] = None
+        _refresh_real_rates(result)
+        result.pop("_real_profit_by_day", None)
         return result
     if allowed_ids is not None:
         money = {}
@@ -1652,11 +1782,51 @@ async def build_overview(
                     point["profit"] = today_aligned["profit"]
                     pay = float(point["pay_amount"] or 0)
                     point["profit_rate"] = round(today_aligned["profit"] / pay, 6) if pay > 0 else None
-    if person is None and allowed_ids is None:
+    today_ready = bool(
+        include_today
+        and start == end == today
+        and today_part
+        and (today_part.get("stat_cost") or today_part.get("pay_amount"))
+    )
+    if person is None and allowed_ids is None and not today_ready and start == end == today:
         official = await official_site_metrics(result["start_date"], result["end_date"])
         if official:
             apply_official_site_money(result, official)
+    _refresh_real_rates(result)
+    result.pop("_real_profit_by_day", None)
     return result
+
+
+async def _stamp_trend_real_profits(
+    db: Session,
+    result: dict[str, Any],
+    people: list[str] | None,
+    allowed_ids: set[int] | None,
+) -> None:
+    """折线图的利润用商品日表按天相加。今天用计划缓存。"""
+    try:
+        _by_adv, by_day = await real_profit_breakdown(
+            db, result["start_date"], result["end_date"], people, allowed_ids
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("区间利润没算出来：%s", exc)
+        by_day = {}
+    result["_real_profit_by_day"] = by_day
+    _refresh_real_rates(result)
+
+
+def _refresh_real_rates(result: dict[str, Any]) -> None:
+    by_day = result.get("_real_profit_by_day") or {}
+    for point in result.get("daily_trend") or []:
+        day = str(point.get("date") or "")
+        if day not in by_day:
+            point["real_profit"] = None
+            point["real_profit_rate"] = None
+            continue
+        profit = round(float(by_day[day]), 2)
+        pay = float(point.get("pay_amount") or 0)
+        point["real_profit"] = profit
+        point["real_profit_rate"] = round(profit / pay, 6) if pay > 0 else None
 
 
 def _empty_compare_board() -> dict[str, Any]:

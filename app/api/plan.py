@@ -1,12 +1,17 @@
+import asyncio
 import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.config import get_settings
+from app.core.database import SessionLocal
 from app.core.exceptions import AppError
 from app.core.response import ok
+from app.models.advertiser import QianchuanAdvertiser
 from app.schemas.plan import (
     CreateUniPlanIn,
     DeletePlansIn,
@@ -16,8 +21,8 @@ from app.schemas.plan import (
     UpdateStatusIn,
 )
 from app.clients import qianchuan_page
-from app.services import overview_service, plan_service, plugin_auth, product_refund, today_plan_cache, uni_create_service, uni_plan_service, workbench_session
-from app.services.account_access import assert_advertiser_access, assert_can_operate, current_username
+from app.services import account_scope, dashboard_cache, overview_service, plan_service, plugin_auth, product_refund, product_refund_api, today_plan_cache, uni_create_service, uni_plan_service, workbench_session
+from app.services.account_access import assert_advertiser_access, assert_can_operate, current_username, visible_advertiser_ids
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(tags=["Plan"])
@@ -106,6 +111,199 @@ async def list_uni_plans(
             data["note"] = "只更新了当前账户的计划"
     product_refund.attach_refund_rates(db, advertiser_id, plans)
     return ok(data)
+
+
+def _visible_shops(db: Session, username: str) -> list[dict]:
+    allowed = visible_advertiser_ids(db, username)
+    stmt = select(QianchuanAdvertiser).order_by(QianchuanAdvertiser.advertiser_id.asc())
+    agent = account_scope.agent_id()
+    if agent:
+        stmt = stmt.where(QianchuanAdvertiser.agent_id == int(agent))
+    shops: list[dict] = []
+    for row in db.scalars(stmt).all():
+        name = row.advertiser_name or ""
+        if not account_scope.keeps_name(name):
+            continue
+        adv_id = int(row.advertiser_id)
+        if allowed is not None and adv_id not in allowed:
+            continue
+        shops.append(
+            {
+                "advertiser_id": adv_id,
+                "advertiser_name": name,
+                "person": account_scope.owner_label(name) or "",
+            }
+        )
+    return shops
+
+
+def _stamp_plans(plans: list[dict], shop: dict) -> list[dict]:
+    for plan in plans:
+        plan["advertiser_id"] = shop["advertiser_id"]
+        plan["advertiser_name"] = shop["advertiser_name"]
+        plan["person"] = shop["person"]
+    return plans
+
+
+async def _fetch_account_plans(advertiser_id: int, start: str, end: str, cookie: str) -> list[dict]:
+    """一个账户的推商品计划。页面能拉就用页面，否则走开放平台，不拉乘方和直播。"""
+    if cookie:
+        try:
+            return await qianchuan_page.fetch_product_plans(cookie, advertiser_id, start, end)
+        except AppError as exc:
+            if exc.code in (40121, 40421):
+                raise
+            logger.warning("千川页面计划没拉到，改走开放平台 advertiser=%s：%s", advertiser_id, exc.msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("千川页面计划没拉到，改走开放平台 advertiser=%s：%s", advertiser_id, exc)
+    db = SessionLocal()
+    try:
+        data = await uni_plan_service.list_uni_plans(
+            db,
+            advertiser_id,
+            start_date=start,
+            end_date=end,
+            sync_commission=False,
+        )
+        plans = list(data.get("plans") or [])
+        await uni_plan_service.attach_product_stats(db, advertiser_id, start, end, plans)
+        return plans
+    finally:
+        db.close()
+
+
+@router.get("/plan/uni/board", summary="当前账号下全部账户的推商品计划")
+async def plan_board(
+    request: Request,
+    start_date: str | None = Query(None, description="开始日期，默认今天"),
+    end_date: str | None = Query(None, description="结束日期，默认今天"),
+    refresh: int = Query(0, description="1 时今天也不读缓存，重新拉取"),
+    db: Session = Depends(get_db),
+):
+    today = date.today().isoformat()
+    start = start_date or today
+    end = end_date or today
+    if start > end:
+        raise AppError("开始日期不能晚于结束日期")
+    shops = _visible_shops(db, current_username(request))
+    if not shops:
+        return ok(
+            {
+                "plans": [],
+                "total": 0,
+    known = {int(shop["advertiser_id"]) for shop in shops}
+    allowed = visible_advertiser_ids(db, current_username(request))
+    for adv_id, name in (await dashboard_cache.today_workbench_shops()).items():
+        if adv_id in known or not account_scope.keeps_name(name):
+            continue
+        if allowed is not None and adv_id not in allowed:
+            continue
+        shops.append(
+            {
+                "advertiser_id": adv_id,
+                "advertiser_name": name,
+                "person": account_scope.owner_label(name) or "",
+            }
+        )
+                "accounts": 0,
+                "cached_accounts": 0,
+                "fetched_accounts": 0,
+                "failed_accounts": 0,
+                "start_date": start,
+                "end_date": end,
+                "note": "",
+            }
+        )
+    use_cache = start == today and end == today and not refresh
+    cached_map: dict[int, dict] = {}
+    if use_cache:
+        try:
+            cached_map = await today_plan_cache.mget_accounts(today, [shop["advertiser_id"] for shop in shops])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("计划缓存没读到，改为现拉：%s", exc)
+            cached_map = {}
+    session = workbench_session.get_session(db)
+    cookie = (session.cookie or "").strip() if session is not None else ""
+    concurrency = max(1, int(get_settings().TODAY_PLAN_CONCURRENCY))
+    gate = asyncio.Semaphore(concurrency)
+    fetched: dict[int, list[dict]] = {}
+    failed: list[int] = []
+    fatal: AppError | None = None
+
+    async def one(shop: dict) -> None:
+        nonlocal fatal
+        if fatal is not None:
+            return
+        adv_id = shop["advertiser_id"]
+        if adv_id in cached_map and isinstance(cached_map[adv_id].get("plans"), list):
+            return
+        async with gate:
+            if fatal is not None:
+                return
+            try:
+                fetched[adv_id] = await _fetch_account_plans(adv_id, start, end, cookie)
+            except AppError as exc:
+                if exc.code in (40121, 40421):
+                    fatal = exc
+                    return
+                failed.append(adv_id)
+                logger.warning("账户 %s 计划没拉到：%s", adv_id, exc.msg)
+            except Exception as exc:  # noqa: BLE001
+                failed.append(adv_id)
+                logger.warning("账户 %s 计划没拉到：%s", adv_id, exc)
+
+    await asyncio.gather(*(one(shop) for shop in shops))
+    if fatal is not None:
+        raise fatal
+
+    plans: list[dict] = []
+    cached_accounts = 0
+    fetched_accounts = 0
+    for shop in shops:
+        adv_id = shop["advertiser_id"]
+        if adv_id in cached_map and isinstance(cached_map[adv_id].get("plans"), list):
+            rows = list(cached_map[adv_id]["plans"])
+            cached_accounts += 1
+        elif adv_id in fetched:
+            rows = fetched[adv_id]
+            fetched_accounts += 1
+            if start == today and end == today:
+                try:
+                    await today_plan_cache.put_account(
+                        today,
+                        adv_id,
+                        rows,
+                        start_date=today,
+                        end_date=today,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("账户 %s 计划缓存没写上：%s", adv_id, exc)
+        else:
+            continue
+        uni_plan_service.apply_local_commission(db, adv_id, rows)
+        product_refund.attach_refund_rates(db, adv_id, rows)
+        plans.extend(_stamp_plans(rows, shop))
+
+    notes: list[str] = []
+    if cached_accounts and not fetched_accounts:
+        notes.append("今天的计划来自缓存")
+    elif cached_accounts:
+        notes.append(f"{cached_accounts} 个账户用缓存，{fetched_accounts} 个账户现拉")
+    if failed:
+        notes.append(f"{len(failed)} 个账户这次没拉到")
+    return ok(
+        {
+            "plans": plans,
+            "total": len(plans),
+            "accounts": len(shops),
+            "cached_accounts": cached_accounts,
+            "fetched_accounts": fetched_accounts,
+            "failed_accounts": len(failed),
+            "start_date": start,
+            "end_date": end,
+            "note": "；".join(notes),
+        }
+    )
 
 
 async def _plans_from_qianchuan_page(db, advertiser_id: int, start: str, end: str):

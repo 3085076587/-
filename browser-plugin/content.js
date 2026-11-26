@@ -6,6 +6,7 @@
   const PLUGIN_USER_KEY = "qc_plugin_user_v1";
   const POS_KEY = "qc_panel_pos_v1";
   const SHOW_KEY = "qc_show_metrics_v1";
+  const PRODUCT_KEY = "qc_plan_products_v1";
   const PANEL_ID = "qc-fangzhou-panel";
   let roiMap = {};
   let timer = 0;
@@ -13,6 +14,14 @@
   let panelOpen = true;
   let pluginToken = "";
   let pluginUser = "";
+  let refundRates = {};
+  let refundAdvertiser = "";
+  let refundReady = false;
+  let refundLoading = false;
+  const productByPlan = {};
+  let productCache = {};
+  let lastPointer = null;
+  let lastHoveredPlanId = "";
   const metricCache = {};
 
   function onUniPage() {
@@ -80,11 +89,16 @@
       watchTable();
       return;
     }
-    chrome.storage.local.get([ROI_KEY, POS_KEY, SHOW_KEY, PLUGIN_TOKEN_KEY, PLUGIN_USER_KEY], (data) => {
+    chrome.storage.local.get([ROI_KEY, POS_KEY, SHOW_KEY, PLUGIN_TOKEN_KEY, PLUGIN_USER_KEY, PRODUCT_KEY], (data) => {
       if (!storageAlive()) return;
       roiMap = (data && data[ROI_KEY]) || {};
       pluginToken = (data && data[PLUGIN_TOKEN_KEY]) || "";
       pluginUser = (data && data[PLUGIN_USER_KEY]) || "";
+      productCache = (data && data[PRODUCT_KEY] && typeof data[PRODUCT_KEY] === "object") ? data[PRODUCT_KEY] : {};
+      const known = productCache[advertiserId()];
+      if (known && typeof known === "object") {
+        absorbPairs(Object.keys(known).map((adId) => ({ adId, productId: known[adId] })));
+      }
       const pos = data && data[POS_KEY];
       if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) panelPos = pos;
       const shown = data && data[SHOW_KEY];
@@ -98,8 +112,8 @@
 
   function recordOf(planId) {
     const saved = roiMap[planId];
-    if (saved && typeof saved === "object") return { commission: saved.commission || "", refund: saved.refund || "" };
-    return { commission: "", refund: "" };
+    if (saved && typeof saved === "object") return { commission: saved.commission || "" };
+    return { commission: "" };
   }
 
   function advertiserId() {
@@ -121,34 +135,172 @@
         adId: planId,
         productName: (plan && plan.title) || "",
         commission: saved.commission || "",
-        refund: saved.refund || "",
       });
     } catch (_) {}
   }
 
   function saveField(planId, field, value, after) {
+    if (field !== "commission") return;
     const current = recordOf(planId);
-    current[field] = String(value ?? "").trim();
-    if (!current.commission && !current.refund) delete roiMap[planId];
+    current.commission = String(value ?? "").trim();
+    if (!current.commission) delete roiMap[planId];
     else roiMap[planId] = current;
     storageSet({ [ROI_KEY]: roiMap });
     syncProfit(planId);
     pagePlans.forEach((plan) => {
       if (plan.id !== planId) return;
-      plan.saved = { commission: current.commission || "", refund: current.refund || "" };
-      plan.refund = parseRefund(plan.saved.refund);
+      plan.saved = { commission: current.commission || "" };
+      plan.refund = refundRatioFor(plan);
     });
     if (after) after();
     else paint();
   }
 
-  function parseRefund(text) {
-    if (String(text ?? "").trim() === "") return 0;
-    let num = Number(String(text).replace("%", "").trim());
-    if (!Number.isFinite(num) || num < 0) return null;
-    if (num > 1) num /= 100;
-    if (num > 1) return null;
-    return num;
+  function productIdIn(text) {
+    const matched = String(text || "").match(/商品\s*ID\s*[^0-9]{0,8}(\d{18,20})/);
+    return matched ? matched[1] : "";
+  }
+
+  function absorbPairs(pairs) {
+    if (!Array.isArray(pairs) || !pairs.length) return false;
+    let changed = false;
+    pairs.forEach((pair) => {
+      const adId = String((pair && pair.adId) || "");
+      const productId = String((pair && pair.productId) || "");
+      if (!/^\d{8,}$/.test(adId) || !/^\d{16,}$/.test(productId)) return;
+      if (productByPlan[adId] === productId) return;
+      productByPlan[adId] = productId;
+      changed = true;
+    });
+    if (!changed) return false;
+    pagePlans.forEach((plan) => {
+      const productId = productByPlan[plan.id];
+      if (!productId || plan.productId === productId) return;
+      plan.productId = productId;
+      plan.refund = refundRatioFor(plan);
+    });
+    const aavid = advertiserId();
+    if (aavid) {
+      const mine = {};
+      Object.keys(productByPlan).forEach((adId) => {
+        if (/^\d{8,}$/.test(adId) && /^\d{16,}$/.test(String(productByPlan[adId] || ""))) mine[adId] = productByPlan[adId];
+      });
+      productCache[aavid] = mine;
+      storageSet({ [PRODUCT_KEY]: productCache });
+    }
+    return true;
+  }
+
+  function readHookedProducts() {
+    const node = document.getElementById("qc-fangzhou-products");
+    if (!node || !node.textContent) return false;
+    try {
+      return absorbPairs(JSON.parse(node.textContent));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function productIdFromHost(host) {
+    let node = host;
+    for (let depth = 0; node && depth < 8; depth += 1) {
+      const text = node.textContent || "";
+      if (text.length > 4000) {
+        node = node.parentElement;
+        continue;
+      }
+      const count = (text.match(/商品\s*ID/g) || []).length;
+      const id = productIdIn(text);
+      if (id && count === 1) return id;
+      node = node.parentElement;
+    }
+    return "";
+  }
+
+  function refundRatioFor(plan) {
+    const raw = refundRates[String((plan && plan.productId) || "")];
+    const num = Number(raw);
+    if (raw == null || raw === "" || !Number.isFinite(num) || num < 0 || num > 100) return 0.15;
+    return num / 100;
+  }
+
+  function refundPercentText(plan) {
+    if (!refundReady) return "读取中";
+    const raw = refundRates[String((plan && plan.productId) || "")];
+    const num = Number(raw);
+    if (raw == null || raw === "" || !Number.isFinite(num) || num < 0 || num > 100) return "15%";
+    return `${num.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}%`;
+  }
+
+  function bindPlanProducts() {
+    readHookedProducts();
+    let changed = false;
+    pagePlans.forEach((plan) => {
+      let adId = plan.id;
+      let productId = productByPlan[adId];
+      if (!productId && adId.length > 16) {
+        const key = adId.slice(0, 16);
+        if (productByPlan[key]) {
+          adId = key;
+          productId = productByPlan[key];
+          plan.id = key;
+        }
+      }
+      if (!productId || plan.productId === productId) return;
+      plan.productId = productId;
+      plan.refund = refundRatioFor(plan);
+      changed = true;
+    });
+    return changed;
+  }
+
+  function requestRefunds(force) {
+    if (!pluginToken) return;
+    if (!force && (refundLoading || refundReady)) return;
+    refundLoading = true;
+    let settled = false;
+    let tries = 0;
+    const finish = (resp) => {
+      if (resp && resp.ok) {
+        if (settled) return;
+        settled = true;
+        refundLoading = false;
+        refundReady = true;
+        refundRates = resp.rates || {};
+        bindPlanProducts();
+        pagePlans.forEach((plan) => {
+          plan.refund = refundRatioFor(plan);
+        });
+        paint();
+        harvestProductCard();
+        return;
+      }
+      tries += 1;
+      if (tries < 4 && !settled) {
+        window.setTimeout(ask, 600 * tries);
+        return;
+      }
+      if (settled) return;
+      settled = true;
+      refundLoading = false;
+      refundReady = true;
+      refundRates = {};
+      paint();
+    };
+    const ask = () => {
+      try {
+        chrome.runtime.sendMessage({ type: "load-refunds" }, (resp) => {
+          if (chrome.runtime.lastError || !resp || !resp.ok) {
+            finish({ ok: false });
+            return;
+          }
+          finish(resp);
+        });
+      } catch (error) {
+        finish({ ok: false });
+      }
+    };
+    ask();
   }
 
   function commissionFromName(text) {
@@ -171,11 +323,10 @@
     return commissionFromName(text);
   }
 
-  function filledLine(saved) {
-    const parts = [];
-    const refund = String(saved.refund || "").replace("%", "").trim();
+  function filledLine(plan) {
+    const saved = (plan && plan.saved) || {};
+    const parts = [`退款率 ${refundPercentText(plan)}`];
     const commission = String(saved.commission || "").replace("%", "").trim();
-    if (refund !== "") parts.push(`实际退款率 ${refund}%`);
     if (commission !== "") parts.push(`佣金 ${commission}%`);
     return parts.join(" · ");
   }
@@ -617,11 +768,14 @@
 
   function buildPlan(row, costCell, settleCell, index, targetCell) {
     const text = row ? row.textContent || "" : "";
-    const idMatch = text.match(/ID[:：]\s*(\d{8,})/);
-    const id = idMatch ? idMatch[1] : `row-${index + 1}`;
+    const idMatch = text.replace(/商品\s*ID\s*[:：]\s*\d+/g, "").match(/ID[:：]\s*(\d{15,20})/);
+    let id = idMatch ? idMatch[1] : "";
+    if (id.length > 16) id = id.slice(0, 16);
+    if (!id) id = `row-${index + 1}`;
     const saved = recordOf(id);
-    return {
+    const plan = {
       id,
+      productId: productIdIn(text) || productIdFromHost(row) || productByPlan[id] || "",
       title: titleOf(text) || `计划 ${index + 1}`,
       text,
       cost: moneyOf(costCell),
@@ -629,8 +783,9 @@
       targetRoi: moneyOf(targetCell),
       cell: costCell || row,
       saved,
-      refund: parseRefund(saved.refund),
     };
+    plan.refund = refundRatioFor(plan);
+    return plan;
   }
 
   function usable(list) {
@@ -796,10 +951,60 @@
   function attachNames(plans) {
     return plans.map((plan) => {
       const host = badgeHostFor(plan.id);
-      if (!host) return plan;
+      const text = host ? `${host.textContent || ""}\n${plan.text || ""}` : plan.text;
+      const productId = productIdFromHost(host) || productIdIn(text) || plan.productId || productByPlan[plan.id] || "";
+      if (!host) {
+        const next = { ...plan, productId };
+        next.refund = refundRatioFor(next);
+        return next;
+      }
       const title = nameAbove(host) || nameIn(host.textContent || "") || plan.title;
-      const text = `${host.textContent || ""}\n${plan.text || ""}`;
-      return { ...plan, title: title || plan.title, text, cell: host };
+      const next = { ...plan, title: title || plan.title, text, cell: host, productId };
+      next.refund = refundRatioFor(next);
+      return next;
+    });
+  }
+
+  function alignProductIds(plans) {
+    const cards = [];
+    const nodes = document.querySelectorAll("div, span, p");
+    const cap = Math.min(nodes.length, 8000);
+    for (let i = 0; i < cap; i += 1) {
+      const node = nodes[i];
+      if (node.closest(`#${PANEL_ID}, .qc-profit-badge`)) continue;
+      const text = node.textContent || "";
+      if (!text.includes("商品") || text.length > 180) continue;
+      const id = productIdIn(text);
+      if (!id || (text.match(/商品\s*ID/g) || []).length !== 1) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      cards.push({ id, top: rect.top + rect.height / 2 });
+    }
+    if (!cards.length) return plans;
+    return plans.map((plan) => {
+      if (plan.productId) return plan;
+      if (productByPlan[plan.id]) {
+        const known = { ...plan, productId: productByPlan[plan.id] };
+        known.refund = refundRatioFor(known);
+        return known;
+      }
+      const host = plan.cell;
+      if (!host || !host.getBoundingClientRect) return plan;
+      const rect = host.getBoundingClientRect();
+      const mid = rect.top + Math.min(rect.height, 80) / 2;
+      let best = "";
+      let bestDist = 280;
+      cards.forEach((card) => {
+        const dist = Math.abs(card.top - mid);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = card.id;
+        }
+      });
+      if (!best) return plan;
+      const next = { ...plan, productId: best };
+      next.refund = refundRatioFor(next);
+      return next;
     });
   }
 
@@ -820,7 +1025,8 @@
       source = "div行";
       plans = usable(readDivRows(roots, header));
     }
-    if (plans.length) plans = attachNames(plans);
+    readHookedProducts();
+    if (plans.length) plans = alignProductIds(attachNames(plans));
     if (!plans.length) {
       reportRead(`表头已找到：整体消耗是第 ${header.idxCost} 列，净成交金额是第 ${header.idxSettle} 列，共 ${header.heads.length} 列。tbody 是空的，表头外层的 div 行也没有对上这两列。`, [], { header, scope, source });
       return [];
@@ -924,11 +1130,11 @@
   function sourceHtml(plan) {
     const costCls = plan.cost == null ? "miss" : "";
     const settleCls = plan.settle == null ? "miss" : "";
-    return `<div class="qc-source"><div><span>整体消耗</span><b class="${costCls}">${yuan(plan.cost)}</b></div><div><span>净成交金额</span><b class="${settleCls}">${yuan(plan.settle)}</b></div></div>`;
+    return `<div class="qc-source"><div><span>整体消耗</span><b class="${costCls}">${yuan(plan.cost)}</b></div><div><span>净成交金额</span><b class="${settleCls}">${yuan(plan.settle)}</b></div><div><span>退款率</span><b>${refundPercentText(plan)}</b></div></div>`;
   }
 
   function viewOf(plan) {
-    const filled = filledLine(plan.saved);
+    const filled = filledLine(plan);
     const extra = `${sourceHtml(plan)}${filled ? `<span class="qc-filled">${filled}</span>` : ""}`;
     const refund = plan.refund;
     const commission = commissionOf(plan.saved, plan.text);
@@ -1009,7 +1215,7 @@
       badge.dataset.plan = plan.id;
     }
     placeBadge(host, badge);
-    const html = `<b class="${view.cls}">${view.profit == null ? view.sub : `利润${String(view.money).replace(/^\+/, "")}`}</b>${pageMetricHtml(view)}`;
+    const html = `<b class="${view.cls}">${view.profit == null ? view.sub : `利润${String(view.money).replace(/^\+/, "")}`}</b><span class="qc-filled">退款率 ${refundPercentText(plan)}</span>${pageMetricHtml(view)}`;
     if (badge.innerHTML !== html) badge.innerHTML = html;
     plan.mounted = badge;
   }
@@ -1027,7 +1233,7 @@
     if (!panel) {
       panel = document.createElement("aside");
       panel.id = PANEL_ID;
-      panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-logout">退出</button><button type="button" id="qc-fangzhou-refresh">刷新</button><button type="button" id="qc-fangzhou-close">关闭</button></span></header><div class="qc-formula">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗<br>预计成交GMV = 净成交 × (1 − 退款率)。货品毛利 = 预计成交GMV × 佣金率。预计ROI = 货品毛利 ÷ 整体消耗。<br>整体消耗、净成交金额从表格读取。退款率需要填写，不填按 0。佣金从计划名称里的「佣金:xx%」提取，没有就在下方填写，填了以填写的为准。</div><div class="qc-show"><label><input type="checkbox" data-show="gmv">预计成交GMV</label><label><input type="checkbox" data-show="margin">货品毛利</label><label><input type="checkbox" data-show="roi">预计ROI</label></div><div id="qc-fangzhou-total"></div><div id="qc-fangzhou-list"></div>`;
+      panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-logout">退出</button><button type="button" id="qc-fangzhou-refresh">刷新</button><button type="button" id="qc-fangzhou-close">关闭</button></span></header><div class="qc-formula">预估利润 = 净成交金额 × (1 − 退款率) × 佣金率 − 整体消耗<br>预计成交GMV = 净成交 × (1 − 退款率)。货品毛利 = 预计成交GMV × 佣金率。预计ROI = 货品毛利 ÷ 整体消耗。<br>整体消耗、净成交金额从表格读取。退款率按商品 ID 向接口要，同一个商品用同一条；接口没有这个商品就按 15%。佣金从计划名称里的「佣金:xx%」提取，没有就在下方填写，填了以填写的为准。</div><div class="qc-show"><label><input type="checkbox" data-show="gmv">预计成交GMV</label><label><input type="checkbox" data-show="margin">货品毛利</label><label><input type="checkbox" data-show="roi">预计ROI</label></div><div id="qc-fangzhou-total"></div><div id="qc-fangzhou-list"></div>`;
       document.documentElement.appendChild(panel);
       placePanel(panel);
       enableDrag(panel);
@@ -1048,6 +1254,7 @@
         lastReport = "";
         pagePlans = readPlans();
         paint();
+        requestRefunds(true);
       });
       panel.addEventListener("change", (event) => {
         const box = event.target.closest("[data-show]");
@@ -1110,7 +1317,7 @@
         const line = lines[index];
         if (!line) return;
         const view = views[index];
-        const filled = filledLine(plan.saved);
+        const filled = filledLine(plan);
         const html = view.profit == null
           ? `<strong class="miss">${view.money}</strong><em>${view.sub}</em>${filled ? `<em class="qc-filled">${filled}</em>` : ""}`
           : `<strong class="${view.cls}">${view.money}</strong>${filled ? `<em class="qc-filled">${filled}</em>` : ""}`;
@@ -1125,10 +1332,9 @@
     }
     const html = plans.map((plan, index) => {
       const view = views[index];
-      const refund = String(plan.saved.refund || "").replace(/"/g, "&quot;");
       const commission = String(plan.saved.commission || "").replace(/"/g, "&quot;");
-      const filled = filledLine(plan.saved);
-      return `<div class="qc-plan-card"><b>${plan.title}</b><div class="qc-sub">ID ${plan.id}</div>${sourceHtml(plan)}<div class="qc-profit-line">${view.profit == null ? `<strong class="miss">${view.money}</strong><em>${view.sub}</em>` : `<strong class="${view.cls}">${view.money}</strong>`}${filled ? `<em class="qc-filled">${filled}</em>` : ""}</div><div class="qc-roi-line"><span>实际退款率%</span><input data-plan="${plan.id}" data-field="refund" value="${refund}" inputmode="decimal" placeholder="未填按0"></div><div class="qc-roi-line"><span>佣金%</span><input data-plan="${plan.id}" data-field="commission" value="${commission}" inputmode="decimal" placeholder="可从名称取"></div></div>`;
+      const filled = filledLine(plan);
+      return `<div class="qc-plan-card"><b>${plan.title}</b><div class="qc-sub">ID ${plan.id}</div>${sourceHtml(plan)}<div class="qc-profit-line">${view.profit == null ? `<strong class="miss">${view.money}</strong><em>${view.sub}</em>` : `<strong class="${view.cls}">${view.money}</strong>`}${filled ? `<em class="qc-filled">${filled}</em>` : ""}</div><div class="qc-roi-line"><span>佣金%</span><input data-plan="${plan.id}" data-field="commission" value="${commission}" inputmode="decimal" placeholder="可从名称取"></div></div>`;
     }).join("");
     if (list.innerHTML !== html) list.innerHTML = html;
   }
@@ -1153,7 +1359,7 @@
       enableDrag(panel);
     }
     panel.dataset.mode = "login";
-    panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-close">关闭</button></span></header><form class="qc-login"><p>登录后才能改实际退款率和佣金，并同步到后台。网页登录不受影响。</p><input name="username" autocomplete="username" placeholder="账号" maxlength="64"><input name="password" type="password" autocomplete="current-password" placeholder="密码" maxlength="128"><button type="submit">登录</button><div class="qc-login-error"></div></form>`;
+    panel.innerHTML = `<header><strong>千川方舟</strong><span><button type="button" id="qc-fangzhou-close">关闭</button></span></header><form class="qc-login"><p>登录后才能改佣金，并同步到后台。退款率从接口读取。网页登录不受影响。</p><input name="username" autocomplete="username" placeholder="账号" maxlength="64"><input name="password" type="password" autocomplete="current-password" placeholder="密码" maxlength="128"><button type="submit">登录</button><div class="qc-login-error"></div></form>`;
     panel.querySelector("#qc-fangzhou-close").addEventListener("click", () => {
       panelOpen = false;
       panel.remove();
@@ -1188,8 +1394,11 @@
         chrome.storage.local.get([PLUGIN_TOKEN_KEY, PLUGIN_USER_KEY], (data) => {
           pluginToken = (data && data[PLUGIN_TOKEN_KEY]) || "";
           pluginUser = (data && data[PLUGIN_USER_KEY]) || result.username || "";
+          refundReady = false;
+          refundAdvertiser = "";
           panel.remove();
           paint();
+          requestRefunds(true);
         });
       });
     });
@@ -1225,18 +1434,166 @@
     }
   }
 
+  function planFromNode(start) {
+    let node = start && start.nodeType === 1 ? start : (start && start.parentElement);
+    for (let depth = 0; node && depth < 48; depth += 1) {
+      if (node.closest && node.closest(`#${PANEL_ID}, .qc-profit-badge`)) return null;
+      const text = node.textContent || "";
+      if (text.length > 0 && text.length < 8000) {
+        const hits = pagePlans.filter((plan) => plan.id && !String(plan.id).startsWith("row-") && text.includes(plan.id));
+        if (hits.length === 1) return hits[0];
+        if (hits.length > 1) return null;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function planNearY(y) {
+    if (typeof y !== "number") return null;
+    let best = null;
+    let bestDist = 180;
+    pagePlans.forEach((plan) => {
+      const host = plan.cell || plan.mounted;
+      if (!host || !host.getBoundingClientRect || String(plan.id).startsWith("row-")) return;
+      const box = host.getBoundingClientRect();
+      if (box.width < 1 || box.height < 1) return;
+      const dist = Math.abs(box.top + Math.min(box.height, 120) / 2 - y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = plan;
+      }
+    });
+    return best;
+  }
+
+  function planAtPointer() {
+    if (!lastPointer || !document.elementsFromPoint) return null;
+    const stack = document.elementsFromPoint(lastPointer.x, lastPointer.y);
+    for (let i = 0; i < stack.length && i < 16; i += 1) {
+      const hit = planFromNode(stack[i]);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function nearestPlan(node) {
+    const rect = node.getBoundingClientRect();
+    const mid = rect.top + rect.height / 2;
+    let best = null;
+    let bestDist = 520;
+    pagePlans.forEach((plan) => {
+      const host = plan.cell;
+      if (!host || !host.getBoundingClientRect) return;
+      const box = host.getBoundingClientRect();
+      const dist = Math.abs(box.top + Math.min(box.height, 90) / 2 - mid);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = plan;
+      }
+    });
+    return best;
+  }
+
+  function harvestProductCard() {
+    const docs = pageDocs();
+    for (let d = 0; d < docs.length; d += 1) {
+      const nodes = docs[d].querySelectorAll(".line, .goods-info div, .goods-info-card div");
+      for (let i = 0; i < nodes.length; i += 1) {
+        const node = nodes[i];
+        if (node.closest && node.closest(`#${PANEL_ID}, .qc-profit-badge, #qc-fangzhou-products`)) continue;
+        const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+        const productId = productIdIn(text);
+        if (!productId || (text.match(/商品\s*ID/g) || []).length !== 1) continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) continue;
+        const remembered = pagePlans.find((plan) => plan.id === lastHoveredPlanId);
+        const owner = remembered || planNearY(lastPointer && lastPointer.y) || planAtPointer() || nearestPlan(node);
+        if (!owner || String(owner.id).startsWith("row-")) continue;
+        const changed = absorbPairs([{ adId: owner.id, productId }]);
+        if (changed || refundRates[String(productId)] != null) paint();
+        return;
+      }
+    }
+  }
+
+  function watchHookedProducts() {
+    if (watchHookedProducts.started || !document.documentElement) return;
+    watchHookedProducts.started = true;
+    const pull = () => {
+      if (watchHookedProducts.timer) return;
+      watchHookedProducts.timer = window.setTimeout(() => {
+        watchHookedProducts.timer = 0;
+        const changed = bindPlanProducts();
+        harvestProductCard();
+        if (changed) paint();
+      }, 200);
+    };
+    const rememberPointer = (event) => {
+      lastPointer = { x: event.clientX, y: event.clientY };
+      const target = event.target;
+      const inCard = target && target.closest && target.closest(".goods-info, .goods-info-card, .oc-popover");
+      if (!inCard) {
+        const hit = planFromNode(target) || planNearY(event.clientY);
+        if (hit) lastHoveredPlanId = hit.id;
+      }
+      pull();
+    };
+    document.addEventListener("pointermove", rememberPointer, true);
+    document.addEventListener("mouseover", rememberPointer, true);
+    document.addEventListener("qc-fangzhou-products", () => {
+      if (bindPlanProducts()) paint();
+    });
+    pull();
+    window.setInterval(() => {
+      if (!onUniPage() || document.hidden) return;
+      const changed = bindPlanProducts();
+      harvestProductCard();
+      if (changed) paint();
+    }, 500);
+    const observer = new MutationObserver((records) => {
+      let card = false;
+      let hook = false;
+      records.forEach((record) => {
+        const target = record.target;
+        const host = target && target.nodeType === 1 ? target : (target && target.parentElement);
+        if (target && target.id === "qc-fangzhou-products") hook = true;
+        if (host && host.closest && host.closest("div.line")) card = true;
+        const liveText = (host && host.textContent) || (target && target.textContent) || "";
+        if (liveText.length < 500 && (liveText.includes("商品ID") || liveText.includes("商品 ID"))) card = true;
+        const added = record.addedNodes || [];
+        for (let i = 0; i < added.length; i += 1) {
+          const node = added[i];
+          if (!node || node.nodeType !== 1) continue;
+          if (node.id === "qc-fangzhou-products") hook = true;
+          const text = node.textContent || "";
+          if (node.classList && node.classList.contains("line")) card = true;
+          if (node.querySelector && node.querySelector("div.line")) card = true;
+          if (text.includes("商品ID") || text.includes("商品 ID")) card = true;
+        }
+      });
+      if (hook) bindPlanProducts() && paint();
+      if (card) harvestProductCard();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  }
+
   function watchTable() {
     if (!onUniPage() || !document.body) return;
+    watchHookedProducts();
+    document.dispatchEvent(new CustomEvent("qc-fangzhou-want-products"));
     if (watchTable.timer) window.clearInterval(watchTable.timer);
     const read = () => {
       if (!onUniPage() || document.hidden) return;
       try {
         pagePlans = readPlans();
+        harvestProductCard();
       } catch (error) {
         console.log("[千川方舟] 读取中断", error && error.message);
         return;
       }
       paint();
+      requestRefunds(false);
     };
     read();
     let tries = 0;

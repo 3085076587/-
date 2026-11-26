@@ -1,4 +1,4 @@
-"""后台定时：刷新 token + 半小时预热今天/7天/30天仪表盘缓存。"""
+"""后台定时：刷新 token、每天入库、每 15 分钟刷新今天的总览。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from app.core.log_setup import get_task_logger
 from app.services import (
     account_scope,
     daily_sync,
-    dashboard_cache,
     overview_service,
     plan_commission_sync,
     token_store,
@@ -83,16 +82,6 @@ async def refresh_workbench_if_needed() -> None:
         logger.exception("工作台登录保活失败：%s", exc)
     finally:
         db.close()
-
-
-async def warmup_dashboard_cache() -> None:
-    async def _warm(db):
-        await dashboard_cache.warmup_all_presets(db)
-
-    try:
-        await _each_account(_warm)
-    except Exception as exc:
-        logger.exception("仪表盘缓存预热失败：%s", exc)
 
 
 async def refresh_overview_today(*, force: bool) -> None:
@@ -186,7 +175,7 @@ async def overview_today_loop(stop_event: asyncio.Event) -> None:
 
 
 async def token_refresh_loop(stop_event: asyncio.Event) -> None:
-    """启动后循环：token 检查 + 预设区间缓存预热。"""
+    """启动后循环检查 access_token，快过期就刷新。"""
     settings = get_settings()
     interval = max(60, int(settings.DASHBOARD_CACHE_INTERVAL_SECONDS or 1800))
 
@@ -196,10 +185,8 @@ async def token_refresh_loop(stop_event: asyncio.Event) -> None:
     except asyncio.TimeoutError:
         pass
 
-    # 启动后先保活工作台登录，再预热一轮
     await refresh_token_if_needed()
     await refresh_workbench_if_needed()
-    await warmup_dashboard_cache()
 
     while not stop_event.is_set():
         try:
@@ -208,7 +195,6 @@ async def token_refresh_loop(stop_event: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
         await refresh_token_if_needed()
-        await warmup_dashboard_cache()
 
 
 def _seconds_until(hh: int, mm: int) -> float:

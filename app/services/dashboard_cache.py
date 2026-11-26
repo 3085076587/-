@@ -1,7 +1,4 @@
-"""子账户仪表盘：今天/7天/30天 Redis DB1 缓存。
-
-参考 ERP 账户中心：预热与页面同区间只拉一次（单飞），后到的等待同一份结果。
-"""
+"""子账户仪表盘：今天/7天/30天 Redis DB1 缓存。页面来要时读缓存，没有再拉。"""
 
 from __future__ import annotations
 
@@ -15,7 +12,6 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
 
-from app.core.log_setup import get_task_logger
 from app.core.redis_client import get_cache_redis
 from app.services import advertiser_dashboard
 
@@ -40,7 +36,6 @@ class _Flight:
 
 _flights: dict[str, _Flight] = {}
 _flight_lock = asyncio.Lock()
-_warmup_lock = asyncio.Lock()
 
 
 def range_dates(range_key: str) -> tuple[str, str]:
@@ -51,6 +46,37 @@ def range_dates(range_key: str) -> tuple[str, str]:
     elif range_key == "30":
         start = end - timedelta(days=29)
     return start.isoformat(), end.isoformat()
+
+
+async def today_workbench_shops() -> dict[int, str]:
+    """今天各人仪表盘缓存里的账户。广告主表还没这户时，计划列表仍要能拉到。"""
+    from app.services import account_scope
+
+    agent = account_scope.agent_id() or 0
+    day = date.today().isoformat()
+    pattern = f"{CACHE_PREFIX}:{agent}:*:today:{day}"
+    found: dict[int, str] = {}
+    try:
+        client = get_cache_redis()
+        async for key in client.scan_iter(pattern):
+            raw = await client.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            for item in data.get("accounts") or []:
+                try:
+                    adv_id = int(item.get("advertiser_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                name = str(item.get("advertiser_name") or "").strip()
+                if adv_id and name:
+                    found[adv_id] = name
+    except Exception as exc:
+        logger.warning("读今天工作台账户缓存失败：%s", exc)
+    return found
 
 
 def cache_key(range_key: str, person: str, day: str | None = None) -> str:
@@ -365,13 +391,15 @@ async def fetch_people(
     force: bool = False,
     scope_all: bool = False,
 ) -> dict[str, Any]:
-    if scope_all:
+    if scope_all and force:
         start, end = range_dates(range_key)
         discovered = advertiser_dashboard.people_from_accounts(
             await advertiser_dashboard.load_roi2_accounts(start, end)
         )
         if discovered:
             people = discovered
+    elif not people:
+        people = advertiser_dashboard.list_people(db)
     parts: list[dict[str, Any]] = []
     errors: list[str] = []
 
@@ -401,18 +429,3 @@ async def fetch_people(
             [{"accounts": [], "start_date": start, "end_date": end, "from_cache": False, "stale_count": 0}]
         )
     return merge_dashboards(parts)
-
-
-async def warmup_all_presets(db: Session) -> None:
-    """按人名预热今天/7天/30天。某个人已经在拉时，预热等那一次，不重复请求。"""
-    task_logger = get_task_logger()
-    if _warmup_lock.locked():
-        task_logger.info("仪表盘预热已在进行，跳过本轮")
-        return
-    async with _warmup_lock:
-        for key in PRESET_RANGES:
-            try:
-                await fetch_people(db, key, [], force=True, scope_all=True)
-                task_logger.info("仪表盘缓存已预热 range=%s", key)
-            except Exception as exc:
-                task_logger.error("仪表盘预热失败 range=%s: %s", key, exc)

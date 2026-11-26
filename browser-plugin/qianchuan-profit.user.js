@@ -108,11 +108,12 @@
   }
 
   function parseRefund(text) {
-    if (String(text ?? "").trim() === "") return 0;
+    if (String(text ?? "").trim() === "") return 0.15;
     let num = Number(String(text).replace("%", "").trim());
     if (!Number.isFinite(num) || num < 0) return null;
     if (num > 1) num /= 100;
     if (num > 1) return null;
+    if (num === 0) return 0.15;
     return num;
   }
 
@@ -413,7 +414,7 @@
   }
 
   function helpHtml() {
-    return `<button type="button" class="qc-help" aria-label="计算公式">?<span class="qc-help-tip">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗。整体消耗、净成交金额从当前表格读取。实际退款率需要填写，不填按 0。佣金：计划名称里有「佣金:76.32%」就自动提取，没有就在插件里填写；填了以填写的为准。</span></button>`;
+    return `<button type="button" class="qc-help" aria-label="计算公式">?<span class="qc-help-tip">预估利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 整体消耗。整体消耗、净成交金额从当前表格读取。实际退款率需要填写，没填或为 0 按 15%。佣金：计划名称里有「佣金:76.32%」就自动提取，没有就在插件里填写；填了以填写的为准。</span></button>`;
   }
 
   function paintBadge(plan, view) {

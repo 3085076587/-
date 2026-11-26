@@ -366,7 +366,8 @@ async def metrics_for_range(
             accounts = await load_roi2_accounts(today, today)
             total = _finish_sum(total, rollup_accounts(accounts, person))
     stored_rate = total.get("refund_rate_1h")
-    official = await official_refund_rate(db, start, end, person)
+    # 库里已经有退款率就直接用。没有时才问工作台。
+    official = None if stored_rate is not None else await official_refund_rate(db, start, end, person)
     total["refund_rate_1h"] = official if official is not None else stored_rate
     return total
 

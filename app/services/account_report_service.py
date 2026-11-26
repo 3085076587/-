@@ -14,7 +14,8 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from app.models.qianchuan_account_daily import QianchuanAccountDaily
-from app.services import advertiser_dashboard
+from app.models.advertiser import QianchuanAdvertiser
+from app.services import account_scope, advertiser_dashboard
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -221,6 +222,79 @@ def account_rows_by_advertiser(
             "settle_amount": round(settle_val, 2),
             "settle_roi": round(settle_val / cost, 4) if cost > 0 else None,
         }
+    return out
+
+
+def dashboard_accounts(db: Session, start: str | date, end: str | date) -> list[dict[str, Any]]:
+    """历史区间的账户表。只读账户日表和广告主名称，不打工作台。"""
+    names = {
+        int(adv_id): str(name or "")
+        for adv_id, name in db.execute(
+            select(QianchuanAdvertiser.advertiser_id, QianchuanAdvertiser.advertiser_name)
+        ).all()
+    }
+    rows = db.execute(
+        select(
+            QianchuanAccountDaily.advertiser_id,
+            QianchuanAccountDaily.cost,
+            QianchuanAccountDaily.pay_amount,
+            QianchuanAccountDaily.pay_roi,
+            QianchuanAccountDaily.settle_amount,
+            QianchuanAccountDaily.settle_roi,
+            QianchuanAccountDaily.refund_rate_1h,
+        ).where(
+            QianchuanAccountDaily.stat_date >= _as_date(start),
+            QianchuanAccountDaily.stat_date <= _as_date(end),
+        )
+    ).all()
+    bag: dict[int, dict[str, Any]] = {}
+    for adv_id, cost, pay, pay_roi, settle, settle_roi, refund in rows:
+        adv_id = int(adv_id)
+        item = bag.setdefault(
+            adv_id,
+            {
+                "advertiser_id": adv_id,
+                "advertiser_name": names.get(adv_id, ""),
+                "stat_cost": 0.0,
+                "pay_amount": 0.0,
+                "settle_amount": 0.0,
+                "_pay_w": 0.0,
+                "_pay_c": 0.0,
+                "_settle_w": 0.0,
+                "_settle_c": 0.0,
+                "_refund_w": 0.0,
+                "_refund_p": 0.0,
+            },
+        )
+        cost_f = float(cost or 0)
+        pay_f = float(pay or 0)
+        item["stat_cost"] += cost_f
+        item["pay_amount"] += pay_f
+        item["settle_amount"] += float(settle or 0)
+        if pay_roi is not None and cost_f > 0:
+            item["_pay_w"] += cost_f * float(pay_roi)
+            item["_pay_c"] += cost_f
+        if settle_roi is not None and cost_f > 0:
+            item["_settle_w"] += cost_f * float(settle_roi)
+            item["_settle_c"] += cost_f
+        if refund is not None and pay_f > 0:
+            item["_refund_w"] += pay_f * float(refund)
+            item["_refund_p"] += pay_f
+    out: list[dict[str, Any]] = []
+    for item in bag.values():
+        if not account_scope.keeps_name(str(item.get("advertiser_name") or "")):
+            continue
+        pay_base = float(item.pop("_pay_c"))
+        settle_base = float(item.pop("_settle_c"))
+        refund_base = float(item.pop("_refund_p"))
+        item["stat_cost"] = round(float(item["stat_cost"]), 2)
+        item["pay_amount"] = round(float(item["pay_amount"]), 2)
+        item["settle_amount"] = round(float(item["settle_amount"]), 2)
+        item["pay_roi"] = round(float(item.pop("_pay_w")) / pay_base, 4) if pay_base else None
+        item["settle_roi"] = round(float(item.pop("_settle_w")) / settle_base, 4) if settle_base else None
+        item["refund_rate_1h"] = round(float(item.pop("_refund_w")) / refund_base, 6) if refund_base else None
+        out.append(item)
+    out.sort(key=lambda row: float(row["stat_cost"]), reverse=True)
     return out
 
 

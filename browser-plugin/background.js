@@ -12,8 +12,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local.remove([TOKEN_KEY, USER_KEY], () => sendResponse({ ok: true }));
     return true;
   }
+  if (message.type === "load-refunds") {
+    loadRefunds().then(sendResponse, () => sendResponse({ ok: false }));
+    return true;
+  }
   if (message.type === "sync-profit") pushProfit(message, sender);
 });
+
+function dropPluginAuth(sender) {
+  chrome.storage.local.remove([TOKEN_KEY, USER_KEY], () => {
+    const tabId = sender && sender.tab && sender.tab.id;
+    if (tabId) chrome.tabs.sendMessage(tabId, { type: "plugin-auth-lost" });
+  });
+}
+
+async function loadRefunds() {
+  try {
+    const response = await fetch("http://120.76.58.132:8082/api/v1/product-refund-rates");
+    if (!response.ok) return { ok: false, error: `退款率接口 ${response.status}` };
+    const data = await response.json();
+    if (!Array.isArray(data)) return { ok: false, error: "退款率接口不是列表" };
+    const rates = {};
+    data.forEach((row) => {
+      const id = String((row && row.product_id) || "").trim();
+      if (!id) return;
+      const rate = row.refund_rate;
+      if (rate == null || rate === "") return;
+      const num = Number(rate);
+      if (!Number.isFinite(num) || num < 0 || num > 100) return;
+      rates[id] = num;
+    });
+    return { ok: true, rates };
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || "退款率接口失败").slice(0, 80) };
+  }
+}
 
 async function pluginLogin(message) {
   try {
@@ -65,15 +98,10 @@ async function pushProfit(message, sender) {
         ad_id: Number(adId),
         product_name: String(message.productName || ""),
         commission: String(message.commission || ""),
-        refund: String(message.refund || ""),
       }),
     });
     const data = await response.json();
-    if (data && (data.code === 40100 || data.code === 40303)) {
-      await chrome.storage.local.remove([TOKEN_KEY, USER_KEY]);
-      const tabId = sender && sender.tab && sender.tab.id;
-      if (tabId) chrome.tabs.sendMessage(tabId, { type: "plugin-auth-lost" });
-    }
+    if (data && (data.code === 40100 || data.code === 40303)) dropPluginAuth(sender);
   } catch (_) {}
 }
 

@@ -1,4 +1,4 @@
-"""插件登录只能改佣金和实际退款率，并且计划必须在今天的缓存里。"""
+"""插件登录只能改佣金、读取退款率，并且改佣金时计划必须在今天的缓存里。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ PLUGIN_WRITE_PATHS = {
     "/api/plugin/profit-input",
     "/api/plan/commission",
     "/api/product/refund-rate",
+}
+PLUGIN_READ_PATHS = {
+    "/api/plugin/refund-rates",
 }
 _LIMIT = 30
 _WINDOW_SECONDS = 60

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.response import ok
 from app.services import advertiser_dashboard as advertiser_dashboard_service
-from app.services import advertiser_service, dashboard_cache, overview_service
+from app.services import account_report_service, advertiser_service, dashboard_cache, overview_service
 from app.services.account_access import current_username, is_admin, people_for_visible, visible_advertiser_ids
 
 router = APIRouter(tags=["Advertiser"])
@@ -72,9 +72,14 @@ async def _attach_profits(db: Session, data: dict) -> dict:
     end = data.get("end_date") or start
     profits, note = await overview_service.shop_profits(db, start, end)
     data["profit_note"] = note
+    try:
+        real_profits, _by_day = await overview_service.real_profit_breakdown(db, start, end)
+    except Exception:
+        real_profits = {}
     for acc in data.get("accounts") or []:
         adv_id = int(acc.get("advertiser_id") or 0)
         acc["profit"] = None if profits is None else profits.get(adv_id, 0.0)
+        acc["real_profit"] = None if adv_id not in real_profits else real_profits[adv_id]
     return data
 
 
@@ -114,12 +119,28 @@ async def get_advertiser_dashboard(
                 db, range_key, people, force=refresh, scope_all=is_admin(username)
             )
         _keep_visible_accounts(data, allowed)
+        advertiser_service.ensure_seen_advertisers(db, data.get("accounts") or [])
         await _attach_profits(db, data)
         return ok(_stamp(data, username))
 
     today = date.today().isoformat()
     start = start_date or today
     end = end_date or today
+    if end < today:
+        rows = account_report_service.dashboard_accounts(db, start, end)
+        if not is_admin(username):
+            allow = set(people)
+            rows = [
+                item
+                for item in rows
+                if advertiser_dashboard_service.person_name(str(item.get("advertiser_name") or "")) in allow
+            ]
+        data = advertiser_dashboard_service.dashboard_from_accounts(rows, start, end, None, None)
+        data["from_cache"] = True
+        data["range"] = "custom"
+        _keep_visible_accounts(data, allowed)
+        await _attach_profits(db, data)
+        return ok(_stamp(data, username))
     if is_admin(username):
         rows = await advertiser_dashboard_service.load_roi2_accounts(start, end)
         discovered = advertiser_dashboard_service.people_from_accounts(rows)

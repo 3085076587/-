@@ -1,17 +1,19 @@
+import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.exceptions import AppError
 from app.core.response import ok
-from app.services import overview_service, plugin_auth, product_refund, product_report_service, session_auth, today_plan_cache, uni_plan_service
+from app.services import overview_service, plugin_auth, product_refund_api, product_report_service, session_auth, today_plan_cache, uni_plan_service
 from app.services.account_access import assert_advertiser_access, assert_can_operate, current_username
 from app.services.plan_commission_sync import resolve_plan_commission_pct, user_saved_commissions
 from app.services.plugin_page import parse_uni_html
 
+logger = logging.getLogger("uvicorn.error")
 router = APIRouter(tags=["Plugin"])
 
 
@@ -60,7 +62,36 @@ def _parse_commission_input(raw: str | None) -> float | None:
     return round(number, 2)
 
 
-@router.post("/plugin/profit-input", summary="插件同步手填的实际退款率和佣金")
+@router.get("/plugin/refund-rates", summary="插件按今天的计划取商品退款率")
+async def plugin_refund_rates(
+    request: Request,
+    advertiser_id: int = Query(..., description="千川子账户 ID"),
+    db: Session = Depends(get_db),
+):
+    """按计划上的商品 ID 对退款率接口。同一个商品 ID 用同一条。没有退款率的计划不出现，插件按 15% 算。"""
+    assert_advertiser_access(db, current_username(request), advertiser_id)
+    cached = await today_plan_cache.get_account(date.today().isoformat(), advertiser_id)
+    plans = list((cached or {}).get("plans") or [])
+    try:
+        rows = await product_refund_api.load_rates()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("插件读取商品退款率失败：%s", exc)
+        rows = []
+    rate_map = product_report_service.refund_rate_map(rows)
+    rates: dict[str, float] = {}
+    for plan in plans:
+        try:
+            ad_id = int(plan.get("ad_id") or 0)
+            product_id = int(plan.get("product_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not ad_id or product_id not in rate_map:
+            continue
+        rates[str(ad_id)] = rate_map[product_id]
+    return ok({"advertiser_id": advertiser_id, "rates": rates})
+
+
+@router.post("/plugin/profit-input", summary="插件同步手填的佣金")
 async def sync_profit_input(
     payload: ProfitInputIn,
     request: Request,
@@ -88,13 +119,6 @@ async def sync_profit_input(
             product_name = str(matched.get("product_name") or matched.get("ad_name") or "")
     uni_plan_service.save_plan_commission(db, payload.advertiser_id, payload.ad_id, commission)
     if product_id:
-        product_refund.save_product_refund(
-            db,
-            payload.advertiser_id,
-            int(product_id),
-            product_name,
-            payload.refund,
-        )
         product_report_service.save_advertiser_product_commission(
             db,
             payload.advertiser_id,
@@ -111,9 +135,6 @@ async def sync_profit_input(
                 str(item.get("ad_name") or ""),
                 int(payload.ad_id),
                 saved,
-            )
-            item["actual_refund_rate"] = product_refund.percent_text(
-                product_refund.parse_refund_input(payload.refund)
             )
         await today_plan_cache.put_account(
             today,

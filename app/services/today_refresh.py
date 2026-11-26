@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.log_setup import get_task_logger
 from app.clients import qianchuan_page
-from app.services import account_scope, overview_service, product_refund, today_plan_cache, uni_plan_service, workbench_session
+from app.services import account_scope, advertiser_service, overview_service, product_refund, today_plan_cache, uni_plan_service, workbench_session
 from app.services.advertiser_dashboard import load_roi2_accounts, take_roi2_total
 from app.services.sync_retry import async_retry
 

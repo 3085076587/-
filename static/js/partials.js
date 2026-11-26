@@ -12,12 +12,6 @@
       icon: '<path d="M3 3v18h18"/><path d="M7 13l3-3 3 2 4-5"/>',
     },
     {
-      key: "advertisers",
-      href: "/advertisers",
-      label: "账户授权",
-      icon: '<path d="M3 21h18M5 21V8l7-4 7 4v13M9 21v-6h6v6"/>',
-    },
-    {
       key: "plans",
       href: "/plans",
       label: "计划与 ROI",

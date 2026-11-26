@@ -114,19 +114,22 @@ def display_name(product_id: int, name: str | None) -> str:
     return f"商品…{pid[-6:]}"
 
 
+DEFAULT_REFUND_RATIO = 0.15
+
+
 def refund_ratio(raw: Any) -> float:
-    """实际退款率转成 0~1。空当 0。字符串按百分数，数字小于等于 1 当比例。"""
+    """实际退款率转成 0~1。没填或为 0 时按 15% 扣。字符串按百分数，数字小于等于 1 当比例。"""
     if raw is None or raw == "":
-        return 0.0
+        return DEFAULT_REFUND_RATIO
     text = str(raw).replace("%", "").strip()
     try:
         number = float(text)
     except (TypeError, ValueError):
-        return 0.0
+        return DEFAULT_REFUND_RATIO
     if isinstance(raw, str) or number > 1:
         number = number / 100.0
-    if number < 0:
-        return 0.0
+    if number <= 0:
+        return DEFAULT_REFUND_RATIO
     if number > 1:
         return 1.0
     return number
@@ -138,7 +141,7 @@ def estimate_profit(
     refund_ratio_value: Any,
     commission_pct: float | None,
 ) -> float | None:
-    """净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。没有佣金或没有净成交就不算。"""
+    """净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。没填或为 0 的退款率按 15%。没有佣金或没有净成交就不算。"""
     if commission_pct is None or float(commission_pct) <= 0:
         return None
     if settle is None or settle == "":
@@ -1028,3 +1031,110 @@ def profits_by_advertiser(
         adv_id = int(adv)
         bag[adv_id] = bag.get(adv_id, 0.0) + value
     return {adv: round(val, 2) for adv, val in bag.items()}
+
+
+def refund_rate_map(rows: list[dict[str, Any]]) -> dict[int, float]:
+    """商品退款率接口的百分数。没有退款率的商品不放进表，调用方不计算利润。"""
+    out: dict[int, float] = {}
+    for row in rows or []:
+        try:
+            pid = int(row.get("product_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not pid:
+            continue
+        raw = row.get("refund_rate")
+        if raw is None or raw == "":
+            continue
+        try:
+            rate = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if rate < 0 or rate > 100:
+            continue
+        out[pid] = rate
+    return out
+
+
+def api_line_profit(
+    *,
+    settle: Any,
+    cost: Any,
+    rate_percent: float | None,
+    meta: dict[str, Any] | None,
+    plan_name: str = "",
+    product_name: str = "",
+    user_commission: float | None = None,
+) -> float | None:
+    """净成交 × (1 − 接口退款率) × 佣金 − 消耗。没有佣金或没有这个商品的退款率就不算。"""
+    if rate_percent is None:
+        return None
+    info = meta or {}
+    pct = commission_from_saved_or_name(
+        user_commission if user_commission is not None else info.get("commission"),
+        plan_name,
+        product_name,
+        str(info.get("name") or ""),
+    )
+    if pct is None or float(pct) <= 0:
+        return None
+    if settle is None or settle == "":
+        return None
+    try:
+        settle_f = float(settle)
+        cost_f = float(cost or 0)
+        rate = float(rate_percent)
+    except (TypeError, ValueError):
+        return None
+    if rate < 0 or rate > 100:
+        return None
+    return settle_f * (1.0 - rate / 100.0) * float(pct) / 100.0 - cost_f
+
+
+def api_profits_from_product_daily(
+    db: Session,
+    start: str,
+    end: str,
+    rates: dict[int, float],
+    name_commission: dict[tuple[int, int], float] | None = None,
+    advertiser_ids: list[int] | None = None,
+) -> tuple[dict[int, float], dict[str, float]]:
+    """按商品日表把利润加到账户和日期上。只读库，不打千川。"""
+    if not rates:
+        return {}, {}
+    meta_map = load_product_meta(db, advertiser_ids)
+    stmt = select(
+        QianchuanProductDaily.advertiser_id,
+        QianchuanProductDaily.product_id,
+        QianchuanProductDaily.stat_date,
+        QianchuanProductDaily.cost,
+        QianchuanProductDaily.settle_amount,
+    ).where(
+        QianchuanProductDaily.stat_date >= start,
+        QianchuanProductDaily.stat_date <= end,
+    )
+    if advertiser_ids:
+        stmt = stmt.where(QianchuanProductDaily.advertiser_id.in_(list(advertiser_ids)))
+    by_adv: dict[int, float] = {}
+    by_day: dict[str, float] = {}
+    for adv, pid, stat_date, cost, settle in db.execute(stmt).all():
+        pid_i = int(pid)
+        if pid_i not in rates:
+            continue
+        adv_i = int(adv)
+        value = api_line_profit(
+            settle=settle,
+            cost=cost,
+            rate_percent=rates[pid_i],
+            meta=meta_map.get((adv_i, pid_i)),
+            user_commission=None if name_commission is None else name_commission.get((adv_i, pid_i)),
+        )
+        if value is None:
+            continue
+        day = stat_date.isoformat() if isinstance(stat_date, date) else str(stat_date)[:10]
+        by_adv[adv_i] = by_adv.get(adv_i, 0.0) + value
+        by_day[day] = by_day.get(day, 0.0) + value
+    return (
+        {adv: round(val, 2) for adv, val in by_adv.items()},
+        {day: round(val, 2) for day, val in by_day.items()},
+    )

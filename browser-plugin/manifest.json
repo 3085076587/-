@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "千川方舟",
-  "version": "1.7.37",
-  "description": "进入千川全域投放商品计划页后填写实际退款率和佣金，预估利润直接显示在原站表格上。",
+  "version": "1.7.60",
+  "description": "进入千川全域投放商品计划页后，按商品退款率接口计算预估利润，没有退款率按 15%，并显示在原站表格上。",
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
     "https://qianchuan.jinritemai.com/*",
-    "http://120.76.58.132:8081/*"
+    "http://120.76.58.132:8081/*",
+    "http://120.76.58.132:8082/*"
   ],
   "action": {
     "default_title": "千川方舟"
@@ -15,6 +16,12 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": ["https://qianchuan.jinritemai.com/*"],
+      "js": ["page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["https://qianchuan.jinritemai.com/*"],
       "js": ["content.js"],

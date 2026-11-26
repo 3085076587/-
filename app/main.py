@@ -19,7 +19,7 @@ from app.core.log_setup import get_task_logger
 from app.core.redis_client import close_redis
 from app.core.response import fail
 from app.services import account_scope, session_auth, token_store
-from app.services.plugin_auth import PLUGIN_WRITE_PATHS
+from app.services.plugin_auth import PLUGIN_READ_PATHS, PLUGIN_WRITE_PATHS
 from app.services.product_report_service import seed_markers_from_daily
 from app.services.scheduler import daily_sync_loop, overview_today_loop, token_refresh_loop
 import app.models  # noqa: F401 注册 ORM 模型
@@ -132,10 +132,12 @@ async def login_gate(request: Request, call_next):
 
     user = session_auth.read_session(request)
     plugin_user = None if user else session_auth.read_plugin_user(request)
-    if plugin_user and (request.method != "POST" or path not in PLUGIN_WRITE_PATHS):
+    plugin_write = request.method == "POST" and path in PLUGIN_WRITE_PATHS
+    plugin_read = request.method == "GET" and path in PLUGIN_READ_PATHS
+    if plugin_user and not (plugin_write or plugin_read):
         return JSONResponse(
             status_code=200,
-            content=fail(40303, "这个登录凭证只能修改佣金和实际退款率"),
+            content=fail(40303, "这个登录凭证只能修改佣金和读取退款率"),
         )
     if not user and not plugin_user:
         if path.startswith("/api/"):
@@ -180,12 +182,6 @@ def page_login(request: Request):
 def page_auth():
     """授权账号信息。"""
     return _render_page("auth.html", inject_authorize=True)
-
-
-@app.get("/advertisers", response_class=HTMLResponse, include_in_schema=False)
-def page_advertisers():
-    """子账户列表。"""
-    return _render_page("advertisers.html")
 
 
 @app.get("/overview", response_class=HTMLResponse, include_in_schema=False)

@@ -6,7 +6,7 @@
   <title>智能调控 · 千川方舟 ERP</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png">
   <link rel="apple-touch-icon" href="/static/img/logo.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=20261117b">
+  <link rel="stylesheet" href="/static/css/app.css?v=20261124i">
 </head>
 <body>
 <div class="layout">
@@ -21,10 +21,6 @@
     <main class="content">
       <div class="panel plans-panel">
         <div class="toolbar toolbar-wrap">
-          <div class="field">
-            <label>子账户</label>
-            <select id="plan-advertiser"></select>
-          </div>
           <div class="field">
             <label>时间</label>
             <select id="plan-range">
@@ -46,9 +42,25 @@
           <button class="btn btn-accent" id="btn-create-plan" type="button">新建计划</button>
           <button class="btn" id="btn-delete-plans" type="button">批量删除</button>
         </div>
-        <p class="hint" id="plan-hint">利润 = 净成交金额 × (1 − 实际退款率) × 佣金率 − 消耗。手填佣金优先，没填就用计划名称里的佣金，都没有不算。实际退款率没填按 0。</p>
+        <div class="filter-bar">
+          <div class="person-chips" id="plan-people"></div>
+          <button class="btn hidden" id="btn-clear-focus" type="button">取消只看这一户</button>
+        </div>
+        <p class="hint" id="plan-hint">预估利润固定按 15% 退款率。利润和实际退款率用商品退款率接口，缓存 5 小时。没有这个商品的退款率时利润不计算。手填佣金优先，没填就用计划名称里的佣金。</p>
+        <div class="stats stats-kpi" id="plan-summary">
+          <div class="stat-card kpi-ref"><div class="stat-label">总消耗</div><div class="stat-num" id="plan-sum-cost">-</div></div>
+          <div class="stat-card kpi-ref"><div class="stat-label">总净成交额</div><div class="stat-num" id="plan-sum-settle">-</div></div>
+          <div class="stat-card kpi-ref"><div class="stat-label">预估利润</div><div class="stat-num" id="plan-sum-profit">-</div></div>
+          <div class="stat-card kpi-ref"><div class="stat-label">预估利润率</div><div class="stat-num" id="plan-sum-rate">-</div></div>
+          <div class="stat-card kpi-ref"><div class="stat-label">利润</div><div class="stat-num" id="plan-sum-real-profit">-</div></div>
+          <div class="stat-card kpi-ref"><div class="stat-label">利润率</div><div class="stat-num" id="plan-sum-real-rate">-</div></div>
+          <div class="stat-card kpi-ref is-filter" id="plan-filter-on" title="只看投放中">
+            <div class="stat-label">投放中</div>
+            <div class="stat-num" id="plan-sum-on">-</div>
+          </div>
+        </div>
         <div class="table-wrap plans-table-wrap">
-          <table class="plans-table">
+          <table class="plans-table" id="plans-table">
             <colgroup>
               <col class="col-switch">
               <col class="col-info">
@@ -58,8 +70,10 @@
               <col class="col-num">
               <col class="col-num">
               <col class="col-num">
-              <col class="col-num">
               <col class="col-rate">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
               <col class="col-profit">
               <col class="col-count">
               <col class="col-op">
@@ -69,17 +83,22 @@
                 <th class="col-switch">开关</th>
                 <th class="col-info">计划信息</th>
                 <th class="col-status">状态</th>
-                <th class="col-budget">预算 / ROI目标</th>
-                <th class="col-num">整体消耗</th>
-                <th class="col-num">净成交金额</th>
-                <th class="col-num">整体支付ROI</th>
-                <th class="col-num">1小时内退款率</th>
-                <th class="col-rate">实际退款率%</th>
-                <th class="col-num">预估利润率</th>
+                <th class="col-budget">
+                  <span class="sortable" data-sort="budget">预算 <span class="sort-ind"></span></span>
+                  <span class="sortable" data-sort="roi2_goal">ROI目标 <span class="sort-ind"></span></span>
+                </th>
+                <th class="col-num sortable" data-sort="stat_cost">整体消耗 <span class="sort-ind"></span></th>
+                <th class="col-num sortable" data-sort="settle_amount">净成交金额 <span class="sort-ind"></span></th>
+                <th class="col-num sortable" data-sort="pay_roi">整体支付ROI <span class="sort-ind"></span></th>
+                <th class="col-num sortable" data-sort="refund_rate_1h">1小时内退款率 <span class="sort-ind"></span></th>
+                <th class="col-rate sortable" data-sort="actual_refund_rate">实际退款率% <span class="sort-ind"></span></th>
+                <th class="col-num sortable" data-sort="real_profit_rate">利润率 <span class="sort-ind"></span></th>
+                <th class="col-num sortable" data-sort="real_profit">利润 <span class="sort-ind"></span></th>
+                <th class="col-num sortable" data-sort="profit_rate">预估利润率 <span class="sort-ind"></span></th>
                 <th class="col-profit">
                   <div class="profit-with-rate">
-                    <span class="profit-num">预估利润</span>
-                    <span class="rate-head">佣金%</span>
+                    <span class="sortable profit-num" data-sort="profit">预估利润 <span class="sort-ind"></span></span>
+                    <span class="sortable rate-head" data-sort="commission_pct">佣金% <span class="sort-ind"></span></span>
                   </div>
                 </th>
                 <th class="col-count">提醒倒计时</th>
@@ -87,7 +106,7 @@
               </tr>
             </thead>
             <tbody id="plan-tbody">
-              <tr><td colspan="13" class="empty">请选择子账户</td></tr>
+              <tr><td colspan="15" class="empty">正在读取各账户的计划</td></tr>
             </tbody>
           </table>
         </div>
@@ -189,6 +208,10 @@
     <p class="hint">只上传视频。封面和商品图不用传，创建时开启智能优选，由系统自动选。控成本要填 ROI，放量不能填。</p>
     <div class="create-grid">
       <div class="field">
+        <label>投放账户</label>
+        <select id="plan-advertiser"></select>
+      </div>
+      <div class="field">
         <label>抖音号</label>
         <select id="create-aweme">
           <option value="">无号商家</option>
@@ -285,8 +308,8 @@
 <div id="reminder-stack" class="reminder-stack" aria-live="polite"></div>
 
 <script src="/static/js/common.js?v=20261103u"></script>
-<script src="/static/js/partials.js?v=20261117e"></script>
+<script src="/static/js/partials.js?v=20261123k"></script>
 <script src="/static/js/reminders.js"></script>
-<script src="/static/js/plans.js?v=20261109c"></script>
+<script src="/static/js/plans.js?v=20261124h"></script>
 </body>
 </html>
