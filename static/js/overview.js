@@ -92,12 +92,6 @@
     return `${(n * 100).toFixed(2)}%`;
   }
 
-  function fmtActualRefund(value) {
-    if (value == null || value === "" || Number(value) === 0) return "0.00%";
-    const text = fmtRefund(value);
-    return text === "-" ? "0.00%" : text;
-  }
-
   function money(v) {
     return Number(v || 0).toLocaleString("zh-CN", {
       minimumFractionDigits: 2,
@@ -169,7 +163,7 @@
       ind.textContent = th.dataset.sort === sortKey ? (sortAsc ? "↑" : "↓") : "";
     });
     if (!list.length) {
-      body.innerHTML = `<tr><td colspan="12" class="empty">${accountRows.length ? "没有匹配的账户" : "这段时间还没有账户明细"}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="11" class="empty">${accountRows.length ? "没有匹配的账户" : "这段时间还没有账户明细"}</td></tr>`;
       return;
     }
     body.innerHTML = list
@@ -189,7 +183,6 @@
           <td>¥${money(item.settle_amount)}</td>
           <td>${settleRoi}</td>
           <td>${fmtRefund(item.refund_rate_1h)}</td>
-          <td>${fmtActualRefund(item.actual_refund_rate)}</td>
           <td class="${profitClass(item.profit)}">${profit}</td>
           <td class="${profitClass(item.real_profit)}">${real}</td>
           <td><a class="btn" href="/plans?advertiser_id=${id}">看计划</a></td>
