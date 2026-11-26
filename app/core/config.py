@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # 子账户消耗并发拉取上限
     DASHBOARD_CONCURRENCY: int = 2
 
-    # 每日 00:01 入库：更低并发、更多重试，尽量把昨天数据写齐
+    # 每日 03:00 入库：更低并发、更多重试，尽量把昨天数据写齐
     DAILY_SYNC_CONCURRENCY: int = 1
     DAILY_SYNC_MAX_RETRIES: int = 5
     DAILY_SYNC_RETRY_BASE_SECONDS: float = 3.0

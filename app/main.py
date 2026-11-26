@@ -83,7 +83,7 @@ async def lifespan(_: FastAPI):
     refresh_task = asyncio.create_task(token_refresh_loop(stop_event))
     task_logger.info("已启动 token 自动刷新定时任务")
     daily_task = asyncio.create_task(daily_sync_loop(stop_event))
-    task_logger.info("已启动每日 00:01 数据入库定时任务")
+    task_logger.info("已启动每日 03:00 数据入库定时任务")
     today_task = asyncio.create_task(overview_today_loop(stop_event))
     task_logger.info("已启动今天数据总览 15 分钟刷新")
     try:

@@ -1,7 +1,7 @@
 """数据总览的工作台日汇总。
 
 今天直接拉工作台账户表，加总方式和子账户页顶部卡片相同。
-昨天及更早读 qianchuan_overview_daily，由每天 00:01 的入库任务写入。
+昨天及更早读 qianchuan_overview_daily，由每天 03:00 的入库任务写入。
 """
 
 from __future__ import annotations

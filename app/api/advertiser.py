@@ -76,10 +76,16 @@ async def _attach_profits(db: Session, data: dict) -> dict:
         real_profits, _by_day = await overview_service.real_profit_breakdown(db, start, end)
     except Exception:
         real_profits = {}
+    account_ids = [int(acc.get("advertiser_id") or 0) for acc in data.get("accounts") or []]
+    try:
+        actual_rates = await overview_service.account_actual_refund_rates(db, start, end, account_ids)
+    except Exception:
+        actual_rates = {}
     for acc in data.get("accounts") or []:
         adv_id = int(acc.get("advertiser_id") or 0)
         acc["profit"] = None if profits is None else profits.get(adv_id, 0.0)
         acc["real_profit"] = None if adv_id not in real_profits else real_profits[adv_id]
+        acc["actual_refund_rate"] = actual_rates.get(adv_id, 0.0)
     return data
 
 

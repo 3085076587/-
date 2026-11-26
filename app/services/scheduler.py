@@ -21,8 +21,8 @@ from app.services import (
 logger = get_task_logger()
 
 REFRESH_AHEAD = timedelta(hours=2)
-DAILY_SYNC_HOUR = 0
-DAILY_SYNC_MINUTE = 1
+DAILY_SYNC_HOUR = 3
+DAILY_SYNC_MINUTE = 0
 OVERVIEW_TODAY_SECONDS = 15 * 60
 
 
@@ -229,7 +229,7 @@ async def run_daily_sync() -> None:
 
 
 async def daily_sync_loop(stop_event: asyncio.Event) -> None:
-    """每天 00:01 触发一次昨日数据入库。"""
+    """每天 03:00 触发一次昨日数据入库。"""
     while not stop_event.is_set():
         wait = _seconds_until(DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE)
         logger.info("每日同步：距下次 %02d:%02d 还有 %.0f 秒", DAILY_SYNC_HOUR, DAILY_SYNC_MINUTE, wait)
