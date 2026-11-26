@@ -89,12 +89,20 @@ def people_from_accounts(accounts: list[dict[str, Any]]) -> list[str]:
 ProgressCb = Callable[[int, int, str], Awaitable[None]] | None
 
 
-async def _fetch_accounts(start: str, end: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _fetch_accounts(
+    start: str,
+    end: str,
+    on_page: Callable[[int, int], Awaitable[None]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     async with workbench_session.fetch_lock:
-        return await _fetch_accounts_locked(start, end)
+        return await _fetch_accounts_locked(start, end, on_page)
 
 
-async def _fetch_accounts_locked(start: str, end: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _fetch_accounts_locked(
+    start: str,
+    end: str,
+    on_page: Callable[[int, int], Awaitable[None]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     db = SessionLocal()
     row = None
     try:
@@ -105,6 +113,7 @@ async def _fetch_accounts_locked(start: str, end: str) -> tuple[list[dict[str, A
             csrf=row.csrf_token or "",
             start_date=start,
             end_date=end,
+            on_page=on_page,
         )
         workbench_session.mark_ok(db, row, cookie, csrf)
         return accounts, total or {}
@@ -159,28 +168,37 @@ async def fetch_roi2_total(
             db.close()
 
 
-async def load_roi2_accounts(start: str, end: str) -> list[dict[str, Any]]:
+async def load_roi2_accounts(
+    start: str,
+    end: str,
+    *,
+    force: bool = False,
+    on_page: Callable[[int, int], Awaitable[None]] | None = None,
+) -> list[dict[str, Any]]:
     """同一轮刷新里，多个人共用这一次工作台请求。不同授权账号不共用。"""
     key = _range_key(start, end)
 
     async with _load_lock:
-        cached = _load_cache.get(key)
-        if cached and time.monotonic() - cached[0] < _LOAD_CACHE_SECONDS:
-            return list(cached[1])
-        task = _load_tasks.get(key)
+        if not force:
+            cached = _load_cache.get(key)
+            if cached and time.monotonic() - cached[0] < _LOAD_CACHE_SECONDS:
+                return list(cached[1])
+            task = _load_tasks.get(key)
+        else:
+            task = None
         if task is None or task.done():
-            task = asyncio.create_task(_fetch_accounts(start, end))
+            task = asyncio.create_task(_fetch_accounts(start, end, on_page))
             _load_tasks[key] = task
 
     try:
         rows, total = await task
     finally:
         async with _load_lock:
-            if task.done() and not task.cancelled() and task.exception() is None:
-                done_rows, done_total = task.result()
-                _load_cache[key] = (time.monotonic(), list(done_rows))
-                _roi2_totals[key] = dict(done_total or {})
             if _load_tasks.get(key) is task and task.done():
+                if not task.cancelled() and task.exception() is None:
+                    done_rows, done_total = task.result()
+                    _load_cache[key] = (time.monotonic(), list(done_rows))
+                    _roi2_totals[key] = dict(done_total or {})
                 _load_tasks.pop(key, None)
     _roi2_totals[key] = dict(total or {})
     return list(rows)
@@ -237,6 +255,7 @@ def _overview(accounts: list[dict[str, Any]]) -> dict[str, Any]:
         "pay_roi": weighted_pay_roi(accounts),
         "settle_amount": round(sum_settle, 2),
         "settle_roi": weighted_settle_roi(accounts),
+        "refund_rate_1h": weighted_refund_rate(accounts),
     }
 
 

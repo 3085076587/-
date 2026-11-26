@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -142,6 +142,7 @@ async def fetch_product_accounts(
     page_size: int = _PAGE_SIZE,
     max_pages: int = _MAX_PAGES,
     advertiser_ids: list[int] | None = None,
+    on_page: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], str, str]:
     """拉取商品投放账户表。返回账户行、原站合计、更新后的 Cookie、csrf。"""
     start_time, end_time = _unix_range(start_date, end_date)
@@ -209,6 +210,13 @@ async def fetch_product_accounts(
                         accounts.append(account)
             pagination = data.get("pagination") or {}
             has_more = bool(pagination.get("hasMore"))
+            total_count = int(pagination.get("total") or 0)
+            if total_count:
+                pages = max(page, (total_count + page_size - 1) // page_size)
+            else:
+                pages = page + (1 if has_more else 0)
+            if on_page is not None:
+                await on_page(page, pages)
             logger.info(
                 "工作台账户表第 %s 页 %s 条，合计 %s",
                 page,

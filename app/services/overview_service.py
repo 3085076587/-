@@ -931,6 +931,40 @@ def _preset_range_key(start: str, end: str) -> str | None:
     return None
 
 
+async def _refresh_live_accounts(
+    db: Session,
+    start: str,
+    end: str,
+    people: list[str] | None,
+    prog_key: str,
+) -> None:
+    """点刷新时向工作台重拉这一段的账户表，并写回今天/7天/30天缓存。"""
+    from app.services import dashboard_cache
+    from app.services.advertiser_dashboard import list_people
+
+    await set_progress(prog_key, status="running", current=0, total=100, message="正在向工作台拉取最新数据")
+
+    async def on_page(page: int, pages: int) -> None:
+        pages = max(int(pages or 1), 1)
+        current = min(99, int(page * 100 / pages))
+        await set_progress(
+            prog_key,
+            status="running",
+            current=current,
+            total=100,
+            message=f"正在拉取工作台账户，第 {page}/{pages} 页",
+        )
+
+    await load_roi2_accounts(start, end, force=True, on_page=on_page)
+    key = _preset_range_key(start, end)
+    if not key:
+        await set_progress(prog_key, status="running", current=100, total=100, message="账户数据已更新，正在汇总")
+        return
+    await set_progress(prog_key, status="running", current=100, total=100, message="正在写入账户缓存")
+    names = list(people) if people else list_people(db)
+    await dashboard_cache.fetch_people(db, key, names, force=True, scope_all=True)
+
+
 async def _accounts_matching_advertiser_page(
     db: Session,
     start: str,
@@ -1592,6 +1626,10 @@ async def build_overview(
     has_history = start <= history_end
     prog_key = progress_key(start, end)
     commission_map = product_report_service.product_commissions(db)
+    if force and include_today:
+        await _refresh_live_accounts(db, start, end, people, prog_key)
+    elif force:
+        await set_progress(prog_key, status="running", current=0, total=1, message="正在读取已入库数据")
 
     history = None
     if has_history:
@@ -1754,7 +1792,7 @@ async def build_overview(
         aligned = None
     if aligned:
         board = dict(aligned["metrics"])
-        if metrics.get("refund_rate_1h") is not None:
+        if not force and metrics.get("refund_rate_1h") is not None:
             board["refund_rate_1h"] = metrics["refund_rate_1h"]
         result["people"] = aligned["people"]
         result["kpis"]["total_profit"] = aligned["profit"]

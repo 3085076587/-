@@ -1,6 +1,6 @@
 /** 数据总览页：KPI + 四张 ECharts 图。消耗来自工作台，利润/产品来自开放平台商品报表（优先读库）。 */
 (() => {
-  const { el, toast, api, setBusy, refreshTokenPill } = window.AdHelper;
+  const { el, toast, api, refreshTokenPill } = window.AdHelper;
 
   const COLORS = {
     cost: "#3b82f6",
@@ -812,21 +812,30 @@
       toast("开始日期不能晚于结束日期", "warn");
       return;
     }
-    const maskTimer = setTimeout(() => {
-      el("loading-mask").classList.remove("hidden");
-    }, 800);
+    const refreshing = !!refresh;
+    const mask = el("loading-mask");
+    const maskTimer = refreshing
+      ? null
+      : setTimeout(() => mask.classList.remove("hidden"), 800);
+    el("loading-title").textContent = refreshing ? "正在拉取最新数据" : "正在加载数据…";
+    if (refreshing) mask.classList.remove("hidden");
     startProgress(`${start}~${end}`);
     try {
       const qs = new URLSearchParams({ start_date: start, end_date: end });
       if (isAdmin && el("ov-person").value) qs.set("person", el("ov-person").value);
-      if (refresh) qs.set("refresh", "true");
-      const boardTask = api(`/api/advertiser/dashboard?${dashboardQuery(start, end).toString()}`).catch(() => null);
+      if (refreshing) qs.set("refresh", "true");
+      const dashQs = dashboardQuery(start, end).toString();
+      const boardTask = refreshing
+        ? null
+        : api(`/api/advertiser/dashboard?${dashQs}`).catch(() => null);
       const isToday = start === todayISO() && end === todayISO();
       const realTask = isToday
         ? loadRealProfits(start, end).catch(() => ({ real: new Map(), estimate: new Map() }))
         : Promise.resolve({ real: new Map(), estimate: new Map() });
       summary = await api(`/api/overview/summary?${qs.toString()}`);
-      const board = await boardTask;
+      const board = refreshing
+        ? await api(`/api/advertiser/dashboard?${dashQs}`).catch(() => null)
+        : await boardTask;
       const profits = await realTask;
       realByAccount = profits.real || new Map();
       accountsReady = !!(board && Array.isArray(board.accounts));
@@ -845,21 +854,21 @@
       const msg = err.message || "加载失败";
       toast(msg, msg.includes("汇总") || msg.includes("稍后再") ? "warn" : "error");
     } finally {
-      clearTimeout(maskTimer);
+      if (maskTimer) clearTimeout(maskTimer);
       stopProgress();
-      el("loading-mask").classList.add("hidden");
+      mask.classList.add("hidden");
     }
   }
 
   async function runQuery(button, refresh) {
     if (querying) return;
     querying = true;
-    setBusy(button, true);
+    if (button) button.disabled = true;
     try {
       await load(!!refresh);
     } finally {
       querying = false;
-      setBusy(button, false);
+      if (button) button.disabled = false;
     }
   }
 
