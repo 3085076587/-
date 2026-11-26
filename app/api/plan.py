@@ -186,11 +186,6 @@ async def plan_board(
     if start > end:
         raise AppError("开始日期不能晚于结束日期")
     shops = _visible_shops(db, current_username(request))
-    if not shops:
-        return ok(
-            {
-                "plans": [],
-                "total": 0,
     known = {int(shop["advertiser_id"]) for shop in shops}
     allowed = visible_advertiser_ids(db, current_username(request))
     for adv_id, name in (await dashboard_cache.today_workbench_shops()).items():
@@ -205,6 +200,11 @@ async def plan_board(
                 "person": account_scope.owner_label(name) or "",
             }
         )
+    if not shops:
+        return ok(
+            {
+                "plans": [],
+                "total": 0,
                 "accounts": 0,
                 "cached_accounts": 0,
                 "fetched_accounts": 0,
